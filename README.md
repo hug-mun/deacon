@@ -119,6 +119,36 @@ Do not use `supabase stop --no-backup` casually. It deletes local database volum
 
 ## Start the Next.js app
 
+The repository includes repeatable mode scripts:
+
+```bash
+./scripts/run-local.sh
+```
+
+This starts local Supabase if needed and runs Next.js at `http://localhost:3000`.
+
+For remote phone testing from another network:
+
+```bash
+./scripts/run-remote-test.sh
+```
+
+This starts local Supabase, creates a Cloudflare tunnel for the Supabase API, creates an ngrok tunnel for Next.js, prints the phone URL, and runs the app with the temporary Supabase URL. Keep that shell open while testing.
+
+Stop only the app/tunnels with Ctrl+C. Stop the complete Deacon stack with:
+
+```bash
+./scripts/stop-all.sh
+```
+
+Check whether anything remains active:
+
+```bash
+./scripts/status.sh
+```
+
+The status script checks the Next.js listener, Supabase API listener, ngrok, Cloudflare Tunnel, and the Supabase database container. It exits with `0` when everything is stopped and `1` when something is still running.
+
 For normal computer-only development:
 
 ```bash
