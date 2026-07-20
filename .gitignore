@@ -7,6 +7,7 @@ out/
 !.env.example
 .vercel/
 coverage/
+.deacon-worker.log
 .supabase/
 supabase/.temp/
 supabase/.branches/

@@ -1,7 +1,9 @@
 /* eslint-disable @next/next/no-img-element */
 import { redirect } from "next/navigation";
 import { AppNav } from "@/components/app/app-nav";
-import { SignOutButton } from "@/components/auth/sign-out-button";
+import { PdfReader } from "@/components/library/pdf-reader";
+import { InlineSearch } from "@/components/search/inline-search";
+import { MediaProcessingStatus } from "@/components/library/media-processing-status";
 import { UploadPanel } from "@/components/upload/upload-panel";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -19,7 +21,9 @@ export default async function LibraryPage() {
 
   const { data: mediaItems } = await supabase
     .from("media_items")
-    .select("id, original_filename, storage_key, status, created_at")
+    .select(
+      "id, original_filename, storage_key, status, kind, processing_stage, processing_progress, processing_error_code, processing_error_service, processing_error_message, processing_error_request_id, image_description, image_ocr_text, created_at",
+    )
     .eq("user_id", user.id)
     .is("deleted_at", null)
     .order("created_at", { ascending: false });
@@ -30,7 +34,10 @@ export default async function LibraryPage() {
         .from("media")
         .createSignedUrl(item.storage_key, 300);
 
-      return { ...item, signedUrl: signedUrl?.signedUrl ?? null };
+      return {
+        ...item,
+        signedUrl: signedUrl?.signedUrl ?? null,
+      };
     }),
   );
 
@@ -39,48 +46,67 @@ export default async function LibraryPage() {
       <AppNav />
       <header className="library-header">
         <div>
-          <p className="eyebrow">Deacon library</p>
-          <h1>Your classes.</h1>
-          <p className="lede">Your recordings, screenshots, and notes will appear here.</p>
+          <p className="eyebrow">Biblioteca</p>
+          <h1>Tu biblioteca.</h1>
+          <p className="lede">Tus imágenes, transcripciones y notas en un solo lugar.</p>
         </div>
-        <SignOutButton />
-      </header>
-      <div id="upload-panel">
         <UploadPanel />
-      </div>
+      </header>
+      <InlineSearch />
       {media.length > 0 ? (
         <section className="media-section" aria-labelledby="media-heading">
           <div className="section-heading">
-            <p className="eyebrow">Recent media</p>
-            <h2 id="media-heading">Getting ready</h2>
+            <p className="eyebrow">Contenido reciente</p>
+            <h2 id="media-heading">Contenido reciente</h2>
           </div>
           <div className="media-grid">
-            {media.map((item) => (
-              <article className="media-card" key={item.id}>
-                {item.signedUrl ? (
-                  <img src={item.signedUrl} alt={item.original_filename} />
-                ) : (
-                  <div className="media-placeholder">Preview unavailable</div>
-                )}
-                <div className="media-card-body">
-                  <strong>{item.original_filename}</strong>
-                  <span>{item.status === "processing" ? "Getting ready" : item.status}</span>
-                </div>
-              </article>
-            ))}
+            {media.map((item) => {
+              const status = (
+                <MediaProcessingStatus
+                  mediaId={item.id}
+                  initialStatus={item.status}
+                  initialStage={item.processing_stage}
+                  initialProgress={item.processing_progress}
+                  initialErrorCode={item.processing_error_code}
+                  initialErrorMessage={item.processing_error_message}
+                  initialErrorRequestId={item.processing_error_request_id}
+                />
+              );
+
+              if (item.kind === "document") {
+                return (
+                  <PdfReader
+                    key={item.id}
+                    mediaId={item.id}
+                    filename={item.original_filename}
+                    status={item.status}
+                    processingStage={item.processing_stage}
+                    processingProgress={item.processing_progress}
+                    processingErrorCode={item.processing_error_code}
+                    processingErrorMessage={item.processing_error_message}
+                    processingErrorRequestId={item.processing_error_request_id}
+                  />
+                );
+              }
+
+              return (
+                <article className="media-card" id={`media-${item.id}`} key={item.id}>
+                  {item.signedUrl ? (
+                    <img src={item.signedUrl} alt={item.original_filename} />
+                  ) : (
+                    <div className="media-placeholder">Vista previa no disponible</div>
+                  )}
+                  <div className="media-card-body">
+                    <strong>{item.original_filename}</strong>
+                    {item.image_description ? <p>{item.image_description}</p> : null}
+                    {status}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
       ) : null}
-      <section className="empty-state">
-        <p className="empty-state-icon">＋</p>
-        <h2>{media.length === 0 ? "Your library is empty" : "More awaits"}</h2>
-        <p>
-          {media.length === 0
-            ? "Upload a screenshot above to create your first session."
-            : "Your next recording, screenshot, or note can join this session flow."}
-        </p>
-      </section>
-      <p className="account-line">Signed in as {user.email ?? "your account"}</p>
     </main>
   );
 }

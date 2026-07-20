@@ -6,6 +6,7 @@ const PasswordAuthSchema = z.object({
   mode: z.enum(["signin", "signup"]),
   email: z.string().email(),
   password: z.string().min(8),
+  redirect_to: z.string().startsWith("/").refine((value) => !value.startsWith("//")).default("/library"),
 });
 
 function formRedirect(path: string) {
@@ -13,6 +14,27 @@ function formRedirect(path: string) {
     status: 303,
     headers: { Location: path },
   });
+}
+
+function authRedirect(path: string) {
+  return path.startsWith("/") && !path.startsWith("//") ? path : "/library";
+}
+
+function getAuthErrorMessage(message: string) {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("invalid login credentials")) {
+    return "El correo electrónico o la contraseña no son correctos.";
+  }
+  if (normalized.includes("user already registered")) {
+    return "Ya existe una cuenta con ese correo electrónico.";
+  }
+  if (normalized.includes("email not confirmed")) {
+    return "Confirma tu correo electrónico antes de iniciar sesión.";
+  }
+  if (normalized.includes("password")) {
+    return "La contraseña no cumple los requisitos.";
+  }
+  return "No se pudo completar la autenticación. Comprueba tus datos e inténtalo otra vez.";
 }
 
 export async function POST(request: Request) {
@@ -30,16 +52,30 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json(
-      { error: { code: "invalid_request", message: "Enter a valid email and password." } },
+      { error: { code: "invalid_request", message: "Introduce un correo electrónico y una contraseña válidos." } },
       { status: 400 },
     );
   }
 
   const supabase = await getSupabaseServerClient();
-  const result =
-    input.mode === "signup"
-      ? await supabase.auth.signUp({ email: input.email, password: input.password })
-      : await supabase.auth.signInWithPassword({ email: input.email, password: input.password });
+  let result:
+    | Awaited<ReturnType<typeof supabase.auth.signUp>>
+    | Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>;
+  try {
+    result =
+      input.mode === "signup"
+        ? await supabase.auth.signUp({ email: input.email, password: input.password })
+        : await supabase.auth.signInWithPassword({ email: input.email, password: input.password });
+  } catch {
+    const message = "No se pudo conectar con Supabase. Comprueba que el servicio local esté activo y que la URL sea http://127.0.0.1:54321.";
+    if (isFormSubmission) {
+      return formRedirect("/login?reason=auth_failed");
+    }
+    return NextResponse.json(
+      { error: { code: "supabase_unreachable", message } },
+      { status: 503 },
+    );
+  }
 
   if (result.error) {
     if (isFormSubmission) {
@@ -47,7 +83,7 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json(
-      { error: { code: "authentication_failed", message: result.error.message } },
+      { error: { code: "authentication_failed", message: getAuthErrorMessage(result.error.message) } },
       { status: 401 },
     );
   }
@@ -61,11 +97,12 @@ export async function POST(request: Request) {
   }
 
   if (isFormSubmission) {
-    return formRedirect("/library");
+    return formRedirect(authRedirect(input.redirect_to));
   }
 
   return NextResponse.json({
     authenticated: true,
+    redirect_to: authRedirect(input.redirect_to),
     user: { id: result.data.user?.id, email: result.data.user?.email },
   });
 }

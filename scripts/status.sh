@@ -35,6 +35,7 @@ check_listener "Next.js" "3000"
 check_listener "Supabase API" "54321"
 check_process "ngrok app tunnel" "ngrok http 3000"
 check_process "Cloudflare Supabase tunnel" "cloudflared tunnel --url http://127.0.0.1:54321"
+check_process "Media processing worker" "scripts/process-media.mjs"
 
 if docker ps --format '{{.Names}}' | rg -q '^supabase_db_Deacon$'; then
   echo "RUNNING  Supabase database container"

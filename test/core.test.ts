@@ -1,0 +1,58 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { chunkText } from "../src/lib/retrieval/chunk-text.ts";
+import { classifyOpenAiFailure } from "../src/lib/openai/provider-error.ts";
+import { verifyPkce, safeRedirectUri } from "../src/lib/mcp/oauth.ts";
+import { createHash } from "node:crypto";
+
+test("chunkText creates bounded overlapping chunks with stable locators", () => {
+  const input = Array.from({ length: 5000 }, (_, index) => `word${index}`).join(" ");
+  const chunks = chunkText(input);
+
+  assert.ok(chunks.length >= 3);
+  assert.ok(chunks.every((chunk) => chunk.content.length <= 1800));
+  assert.equal(chunks[0].charStart, 0);
+  assert.ok(chunks[1].charStart < chunks[0].charEnd);
+  assert.equal(chunks.at(-1)?.charEnd, input.length);
+});
+
+test("OpenAI missing_scope errors are classified as a permission failure", () => {
+  const failure = classifyOpenAiFailure(
+    401,
+    { error: { code: "missing_scope", message: "Missing scopes: model.request" } },
+    new Headers({ "x-request-id": "req_test" }),
+  );
+
+  assert.equal(failure.kind, "permission_denied");
+  assert.equal(failure.code, "missing_scope");
+  assert.equal(failure.requestId, "req_test");
+});
+
+test("OpenAI quota and rate-limit failures remain distinguishable", () => {
+  assert.equal(
+    classifyOpenAiFailure(429, { error: { code: "insufficient_quota" } }).kind,
+    "quota_exhausted",
+  );
+  assert.equal(
+    classifyOpenAiFailure(429, { error: { code: "rate_limit_exceeded" } }).kind,
+    "rate_limited",
+  );
+});
+
+test("MCP PKCE validation accepts S256 and rejects a different verifier", () => {
+  const verifier = "test-verifier-with-enough-entropy";
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+
+  assert.equal(verifyPkce(verifier, challenge), true);
+  assert.equal(verifyPkce("wrong-verifier", challenge), false);
+});
+
+test("MCP redirect validation only accepts the configured ChatGPT prefix", () => {
+  const previous = process.env.MCP_OAUTH_REDIRECT_PREFIX;
+  process.env.MCP_OAUTH_REDIRECT_PREFIX = "https://chatgpt.com/connector/oauth/";
+  assert.equal(safeRedirectUri("https://chatgpt.com/connector/oauth/callback"), true);
+  assert.equal(safeRedirectUri("https://evil.example/callback"), false);
+  assert.equal(safeRedirectUri("https://chatgpt.com/connector/oauth/callback\nattack"), false);
+  if (previous === undefined) delete process.env.MCP_OAUTH_REDIRECT_PREFIX;
+  else process.env.MCP_OAUTH_REDIRECT_PREFIX = previous;
+});

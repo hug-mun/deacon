@@ -8,10 +8,17 @@ The current implementation has:
 - local Supabase Auth, Postgres, pgvector, Realtime, and Storage;
 - email/password authentication;
 - RLS-protected user data;
-- Phase 2 image upload and library display;
+- PDF and image upload with exact duplicate protection;
+- AI image understanding that extracts visible text, visual descriptions, anatomy, and study keywords into searchable chunks;
+- asynchronous PDF text extraction, transcript reading, and progress polling;
+- lexical transcript search that works without an embedding provider, plus optional vector/hybrid ranking;
+- transcript text download and a retry action for failed processing;
+- service diagnostics at `/api/diagnostics`, including a deliberate deep vision probe;
+- a local read-only MCP endpoint at `/mcp` with knowledge search, library listing, media inspection, and bounded transcript-reading tools;
 - temporary remote phone testing through ngrok and Cloudflare Tunnel.
+- a production-ready worker container with PDF extraction and service heartbeats.
 
-Read the system design in [architecture.md](architecture.md), the product design in [masterclass-kb-mvp-spec.md](masterclass-kb-mvp-spec.md), and the build plan in [masterclass-kb-build-spec.md](masterclass-kb-build-spec.md).
+Read the system design in [architecture.md](architecture.md), the product design in [masterclass-kb-mvp-spec.md](masterclass-kb-mvp-spec.md), the build plan in [masterclass-kb-build-spec.md](masterclass-kb-build-spec.md), and the [production runbook](production-runbook.md).
 
 ## Current status
 
@@ -19,12 +26,15 @@ Completed:
 
 1. Phase 0 — project scaffold, Supabase schema, pgvector, RLS, and profile trigger.
 2. Phase 1 — email/password account creation, sign-in, protected routes, and sign-out.
-3. Phase 2 — image selection, automatic session creation, SHA-256 exact-duplicate check, direct Storage upload, finalization, and library preview.
+3. Phase 2 — PDF/image selection, automatic session creation, SHA-256 exact-duplicate check, direct Storage upload, finalization, and library preview.
+4. PDF processing foundation — text extraction, durable chunks, full transcript reader/download, progress reporting, and retry endpoint.
+5. Retrieval foundation — PostgreSQL full-text search works without embeddings; vector retrieval is an optional second signal for hybrid results.
 
 Next:
 
-- Phase 3: image thumbnails, OCR, vision description, embeddings, and `ready` status.
-- Phase 5: video upload, audio extraction, Whisper transcription, timestamped chunks, and transcript download.
+- Phase 3: image thumbnails, CLIP fingerprinting, and richer visual duplicate detection.
+- Phase 5: video upload, audio extraction, Whisper transcription, timestamped chunks, and playback derivatives.
+- Production hosting: deploy with `NEXT_PUBLIC_BASE_PATH=/deacon` behind `https://www.hugmun.ai/deacon`.
 
 ## Prerequisites
 
@@ -169,12 +179,17 @@ The app routes are:
 |---|---|
 | `/` | Public landing page |
 | `/login` | Email/password sign-in and account creation |
-| `/library` | Protected library and image upload panel |
-| `/search` | Protected search placeholder |
+| `/forgot-password` | Requests a password reset email |
+| `/reset-password` | Sets a new password from a valid reset link |
+| `/library` | Protected library and upload panel |
+| `/search` | Protected search surface |
 | `/api/auth/password` | Same-origin sign-in/account creation route |
 | `/api/sessions` | Creates an upload session |
-| `/api/uploads/prepare` | Validates an image and creates a `media_items` row |
+| `/api/uploads/prepare` | Validates a PDF/image and creates a `media_items` row |
 | `/api/uploads/complete` | Verifies Storage and moves the item to `processing` |
+| `/mcp` | Streamable HTTP MCP endpoint for read-only knowledge access (`search_knowledge`, `list_library`, `get_media_item`, `get_transcript`) |
+| `/api/health` | Public uptime/readiness status for app, storage, worker, OpenAI configuration, and MCP |
+| `/api/diagnostics` | Authenticated service-by-service health checks |
 | `/auth/callback` | Legacy auth callback route; not used by the current password flow |
 
 ## Application checks
@@ -185,6 +200,11 @@ Run all checks before committing:
 npm run typecheck
 npm run lint
 npm run build
+npm test
+npm run test:e2e
+
+# Authenticated upload → storage → worker → status test (local, real image)
+DEACON_TEST_IMAGE_PATH=/absolute/path/to/study.png npm run test:pipeline
 ```
 
 Or run them sequentially in one command:
@@ -194,6 +214,10 @@ npm run typecheck && npm run lint && npm run build
 ```
 
 The production build should list the app, auth, library, search, and upload API routes without errors.
+
+`npm run test:e2e` checks the public route contract and authentication boundaries against the running app. It does not create user data. `Revisar IA` in the library calls a one-pixel, low-detail vision request so a missing key permission, exhausted credit, or provider outage is identified as a named service failure. The deep probe is intentionally manual because it makes a real provider request.
+
+`npm run test:pipeline` creates and removes a temporary local user, uploads the supplied image through the same API and private Storage path as the browser, starts the worker, and waits for a terminal processing status. It accepts either a successful image index or the expected, explicitly classified vision-permission failure.
 
 ## Authentication
 
@@ -212,18 +236,36 @@ The login form contains visible diagnostics. Tap **Check again** to test Supabas
 
 The password route uses a same-origin server endpoint so the session cookie is set by the application before navigating to `/library`. It also has a no-JavaScript form fallback.
 
-## Phase 2 upload flow
+## Local upload processing
 
-The current upload flow handles one image at a time:
+`./scripts/run-local.sh` starts the Next.js app and a separate media worker. The worker watches `media_items.status=processing`, extracts text from PDFs with `pdftotext`, stores the transcript and searchable text chunks, and moves the item to `ready`. Progress is stored on the media row and the library polls it every 1.5 seconds. Leaving the library page does not stop the worker; it continues until the local app is stopped.
 
-1. The user taps **Add** and selects a JPEG, PNG, or HEIC image.
+The worker always creates transcript chunks. If `OPENAI_API_KEY` is absent, PostgreSQL full-text search remains available for PDFs and notes. If the key is present, the worker backfills `text-embedding-3-small` vectors and the search API combines lexical and vector results. Images use the configured `OPENAI_VISION_MODEL` (default `gpt-5.6-luna`) to extract visible text and a searchable visual description before embedding both.
+
+The image lane requires an API key with the `model.request` permission in addition to embeddings access. A restricted key that can call `/v1/embeddings` but cannot call a vision model will leave image items in a failed state with a permission-specific message.
+
+Every media processing failure records the responsible service, a safe user-facing explanation, and—when the provider supplies one—the request ID. The library shows these details and the retry action. The boundaries are `supabase_database`, `supabase_storage`, `openai_vision`, `openai_embeddings`, `media_worker`, and `mcp`; this keeps the MVP operationally diagnosable without splitting the deployment into unnecessary network microservices.
+
+The MCP implementation includes OAuth 2.1 discovery, authorization-code + PKCE, and audience-bound access tokens. Production still requires the HTTPS deployment variables and a long random `MCP_OAUTH_SIGNING_SECRET`; the MCP retrieval path uses the same hybrid lexical/semantic search as the web app when embeddings are available.
+
+The worker writes its logs to `.deacon-worker.log`. To run it separately:
+
+```bash
+npm run worker:media
+```
+
+## Upload flow
+
+The current upload flow handles one PDF or image at a time:
+
+1. The user taps **Add** and selects a PDF, JPEG, PNG, or HEIC image.
 2. The browser computes a SHA-256 hash.
 3. The app creates one session automatically using today’s date.
 4. The server checks for an existing exact hash.
 5. The server creates a `media_items` row with `status=uploading`.
 6. The browser uploads directly to the private Supabase Storage `media` bucket.
 7. The server verifies the object and changes the row to `status=processing`.
-8. The library renders a signed preview URL.
+8. The library renders a signed preview URL or the full-width PDF transcript reader.
 
 Local development uses Supabase Storage behind the storage boundary. Production will use Cloudflare R2 and presigned multipart uploads without changing the core session/media API.
 
@@ -232,6 +274,21 @@ Storage keys use this shape:
 ```text
 users/{user_id}/{media_id}/original.{ext}
 ```
+
+## HTTPS and `/deacon`
+
+`https://www.hugmun.ai/` is already served by Vercel with HTTPS. This repository supports a path-mounted deployment by building with:
+
+```dotenv
+NEXT_PUBLIC_BASE_PATH=/deacon
+APP_PUBLIC_URL=https://www.hugmun.ai/deacon
+MCP_PUBLIC_URL=https://www.hugmun.ai/deacon/mcp
+MCP_OAUTH_ISSUER=https://www.hugmun.ai/deacon
+```
+
+The existing hugmun.ai Vercel project must then route `/deacon/*` to the Deacon deployment, or both sites must be combined into one Vercel project. A separate `deacon.hugmun.ai` deployment is the simpler fallback if the current Astro project cannot add a cross-project rewrite. OAuth metadata and client-side API calls are base-path aware.
+
+The web deployment and media worker are separate runtime responsibilities. Deploy `Dockerfile.worker` to a small always-on container service with the same Supabase and OpenAI environment variables. The worker must remain running; `/api/health` reports `media_worker: down` when its heartbeat is older than 90 seconds. The production web app should be monitored at `/api/health`, and the authenticated library diagnostics should be used for human-readable incident details.
 
 The Storage policies only allow an authenticated user to access objects under their own `users/{user_id}/` prefix.
 

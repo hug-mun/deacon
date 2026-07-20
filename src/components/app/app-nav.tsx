@@ -1,23 +1,15 @@
 import Link from "next/link";
+import { SignOutButton } from "@/components/auth/sign-out-button";
 
-type NavSection = "library" | "search";
-
-export function AppNav({ active = "library" }: { active?: NavSection }) {
+export function AppNav() {
   return (
-    <nav className="app-nav" aria-label="Primary navigation">
+    <nav className="app-nav" aria-label="Navegación principal">
       <Link className="nav-brand" href="/library">
+        <span className="brand-mark" aria-hidden="true">D</span>
         Deacon
       </Link>
-      <div className="nav-links">
-        <Link className={`nav-link ${active === "library" ? "active" : ""}`} href="/library">
-          Library
-        </Link>
-        <Link className={`nav-link ${active === "search" ? "active" : ""}`} href="/search">
-          Search
-        </Link>
-        <Link className="add-button" href="/library#upload-panel">
-          <span aria-hidden="true">＋</span> Add
-        </Link>
+      <div className="nav-actions">
+        <SignOutButton />
       </div>
     </nav>
   );

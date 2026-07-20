@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { AppNav } from "@/components/app/app-nav";
+import { InlineSearch } from "@/components/search/inline-search";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -16,24 +18,16 @@ export default async function SearchPage() {
 
   return (
     <main className="library-shell">
-      <AppNav active="search" />
+      <AppNav />
       <section className="page-intro">
-        <p className="eyebrow">Find anything</p>
-        <h1>Search your knowledge.</h1>
-        <p className="lede">Search will look across transcripts, screenshots, and notes as they become ready.</p>
+        <Link className="back-link" href="/library">
+          ← Volver a la biblioteca
+        </Link>
+        <p className="eyebrow">Encuentra cualquier cosa</p>
+        <h1>Busca en tu conocimiento.</h1>
+        <p className="lede">Busca en el contenido visible de tus imágenes, transcripciones y notas.</p>
       </section>
-      <form className="search-form">
-        <label htmlFor="search-query">Search your library</label>
-        <div className="search-input-row">
-          <input id="search-query" name="q" type="search" placeholder="Try “what did the instructor say about…”" disabled />
-          <button type="button" disabled>Search</button>
-        </div>
-      </form>
-      <section className="coming-soon-card">
-        <p className="empty-state-icon">⌕</p>
-        <h2>Search is next</h2>
-        <p>We’ll connect this screen to OCR, transcripts, and embeddings in the next processing phases.</p>
-      </section>
+      <InlineSearch />
     </main>
   );
 }
