@@ -8,11 +8,8 @@ import { appPath } from "@/lib/app-path";
 export function ForgotPasswordForm() {
   const [email, setEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isVerifying, setIsVerifying] = useState(false);
   const [sent, setSent] = useState(false);
-  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const isValidCodeLength = code.length === 6 || code.length === 8;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -31,50 +28,12 @@ export function ForgotPasswordForm() {
     }
   }
 
-  async function handleCodeSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setIsVerifying(true);
-    setError(null);
-
-    const { error: verifyError } = await getSupabaseBrowserClient().auth.verifyOtp({
-      email,
-      token: code.trim(),
-      type: "recovery",
-    });
-
-    setIsVerifying(false);
-    if (verifyError) {
-      setError("El código no es válido o ya expiró. Solicita uno nuevo.");
-      return;
-    }
-
-    window.location.assign(appPath("/reset-password"));
-  }
-
   if (sent) {
     return (
       <div className="auth-form-result">
-        <p className="auth-alert success" role="status">Revisa tu correo. Puedes abrir el enlace o introducir aquí el código de recuperación.</p>
-        <form className="auth-form" onSubmit={handleCodeSubmit}>
-          <label htmlFor="recovery-code">Código de recuperación</label>
-          <input
-            id="recovery-code"
-            type="text"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            pattern="[0-9]{6,8}"
-            minLength={6}
-            maxLength={8}
-            placeholder="12345678"
-            value={code}
-            onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 8))}
-            required
-          />
-          <button className="primary-button auth-submit" type="submit" disabled={isVerifying || !isValidCodeLength}>
-            {isVerifying ? "Verificando…" : "Usar código"}
-          </button>
-          {error ? <p className="form-message error">{error}</p> : null}
-        </form>
+        <p className="auth-alert success" role="status">
+          Te enviamos un enlace de recuperación a <strong>{email}</strong>. Revisa también la carpeta de spam.
+        </p>
         <Link className="auth-forgot-link" href="/login">Volver a iniciar sesión</Link>
       </div>
     );
@@ -93,7 +52,7 @@ export function ForgotPasswordForm() {
         required
       />
       <button className="primary-button auth-submit" type="submit" disabled={isSubmitting}>
-        {isSubmitting ? "Enviando…" : "Enviar enlace"}
+        {isSubmitting ? "Enviando…" : "Enviar enlace de recuperación"}
       </button>
       {error ? <p className="form-message error">{error}</p> : null}
       <Link className="auth-forgot-link" href="/login">Volver a iniciar sesión</Link>
