@@ -22,7 +22,7 @@ export default async function LibraryPage() {
   const { data: mediaItems } = await supabase
     .from("media_items")
     .select(
-      "id, original_filename, storage_key, status, kind, processing_stage, processing_progress, processing_error_code, processing_error_service, processing_error_message, processing_error_request_id, image_description, image_ocr_text, created_at",
+      "id, original_filename, storage_key, status, kind, processing_stage, processing_progress, processing_error_code, processing_error_service, processing_error_message, processing_error_request_id, image_title_en, image_title_es, image_description, image_ocr_text, created_at",
     )
     .eq("user_id", user.id)
     .is("deleted_at", null)
@@ -97,7 +97,8 @@ export default async function LibraryPage() {
                     <div className="media-placeholder">Vista previa no disponible</div>
                   )}
                   <div className="media-card-body">
-                    <strong>{item.original_filename}</strong>
+                    <strong>{item.image_title_es ?? item.image_title_en ?? item.original_filename}</strong>
+                    {item.image_title_en && item.image_title_es ? <small className="media-card-title-en">{item.image_title_en}</small> : null}
                     {item.image_description ? <p>{item.image_description}</p> : null}
                     {status}
                   </div>

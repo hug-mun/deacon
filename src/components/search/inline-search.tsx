@@ -7,6 +7,8 @@ type SearchResult = {
   id: string;
   media_item_id: string | null;
   original_filename: string | null;
+  title_en: string | null;
+  title_es: string | null;
   similarity: number;
   source_type: string;
   char_start: number | null;
@@ -113,7 +115,8 @@ export function InlineSearch() {
           {visibleMatches.map(({ result, match }) => (
               <article className="search-result" key={match.id}>
                 <div className="search-result-heading">
-                  <strong>{result.original_filename ?? "Nota"}</strong>
+                  <strong>{result.title_es ?? result.title_en ?? result.original_filename ?? "Nota"}</strong>
+                  {result.title_en && result.title_es ? <small>{result.title_en}</small> : null}
                   <small>{sourceLabels[result.source_type] ?? result.source_type}</small>
                 </div>
                 <span>{match.snippet}</span>

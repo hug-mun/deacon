@@ -1262,6 +1262,14 @@ h3 {
   white-space: nowrap;
 }
 
+.media-card-title-en {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .media-card-body > p {
   display: -webkit-box;
   overflow: hidden;

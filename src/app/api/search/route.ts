@@ -196,7 +196,27 @@ export async function GET(request: Request) {
     const rankedRows = [...merged.values()]
       .sort((left, right) => right.similarity - left.similarity)
       .slice(0, 20);
+    const mediaIds = [...new Set(rankedRows.map((row) => row.media_item_id).filter((id): id is string => Boolean(id)))];
+    const { data: imageTitles, error: imageTitlesError } = mediaIds.length
+      ? await supabase
+          .from("media_items")
+          .select("id, image_title_en, image_title_es")
+          .eq("user_id", user.id)
+          .is("deleted_at", null)
+          .in("id", mediaIds)
+      : { data: [], error: null };
+    if (imageTitlesError) {
+      console.error("[deacon][search] image title lookup failed", {
+        code: imageTitlesError.code,
+        message: imageTitlesError.message,
+        userId: user.id,
+      });
+    }
+    const titleByMediaId = new Map((imageTitles ?? []).map((item) => [item.id, item]));
+
     const groupedRows = new Map<string, SearchRow & {
+      image_title_en: string | null;
+      image_title_es: string | null;
       lexicalSimilarity?: number;
       vectorSimilarity?: number;
       match_count: number;
@@ -220,6 +240,8 @@ export async function GET(request: Request) {
       }
       groupedRows.set(key, {
         ...row,
+        image_title_en: row.media_item_id ? titleByMediaId.get(row.media_item_id)?.image_title_en ?? null : null,
+        image_title_es: row.media_item_id ? titleByMediaId.get(row.media_item_id)?.image_title_es ?? null : null,
         match_count: 1,
         matches: [{
           id: row.id,
@@ -243,6 +265,8 @@ export async function GET(request: Request) {
         source_id: result.source_id,
         media_item_id: result.media_item_id,
         original_filename: result.original_filename,
+        title_en: result.image_title_en,
+        title_es: result.image_title_es,
         char_start: result.char_start,
         char_end: result.char_end,
         similarity: result.similarity,

@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 // fixture test when bundled as a serverless dependency.
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import WebSocket from "ws";
+import { imageChunks, normalizeImageAnalysis } from "./image-analysis.mjs";
 
 const POLL_MS = 1500;
 const EMBEDDING_MODEL = "text-embedding-3-small";
@@ -99,23 +100,6 @@ function chunkTranscript(text) {
   return chunks;
 }
 
-function stringList(value) {
-  return Array.isArray(value)
-    ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
-    : [];
-}
-
-function normalizeImageAnalysis(value) {
-  return {
-    description: typeof value?.description === "string" ? value.description.trim() : "",
-    visibleText: typeof value?.visibleText === "string" ? value.visibleText.trim() : "",
-    concepts: stringList(value?.concepts),
-    keywords: stringList(value?.keywords),
-    bodyRegion: typeof value?.bodyRegion === "string" ? value.bodyRegion.trim() : "",
-    imageType: typeof value?.imageType === "string" ? value.imageType.trim() : "",
-  };
-}
-
 async function analyzeImage(file, mimeType) {
   if (!openAiApiKey) {
     throw new Error("OPENAI_API_KEY is required to analyze images");
@@ -129,14 +113,14 @@ async function analyzeImage(file, mimeType) {
       {
         role: "system",
         content:
-          "You analyze images uploaded for a dermatologist's private exam-study library. Describe only what is visibly present or legibly written. Do not identify people, infer a patient's identity, or make a clinical diagnosis. Return valid JSON with exactly these keys: description (string), visibleText (string), concepts (array of strings), keywords (array of strings), bodyRegion (string), imageType (string). Include useful dermatology study terms, lesion morphology, anatomical region, slide headings, and labels when visible.",
+          "You analyze images uploaded for a dermatologist's private exam-study library. Describe only what is visibly present or legibly written. Do not identify people, infer a patient's identity, or make a clinical diagnosis. Return valid JSON with exactly these keys: titleEn (short English title), titleEs (short Spanish title), description (string), visibleText (string), concepts (array of strings), keywords (array of strings), bodyRegion (string), imageType (string). Make both titles concise, useful for a library card and search, and based only on visible study content. Do not put a diagnosis in a title unless it is explicitly printed in the image or clearly framed as a study topic. Include useful dermatology study terms, lesion morphology, anatomical region, slide headings, and labels when visible.",
       },
       {
         role: "user",
         content: [
           {
             type: "text",
-            text: "Analyze this study image for later semantic search. If it is a slide or screenshot, transcribe the readable text. If it is a clinical teaching image, describe observable visual features without diagnosing it. Return only the JSON object.",
+            text: "Analyze this study image for later semantic search. Create a short title in English and Spanish. If it is a slide or screenshot, transcribe the readable text. If it is a clinical teaching image, describe observable visual features without diagnosing it. Return only the JSON object.",
           },
           {
             type: "image_url",
@@ -194,24 +178,6 @@ async function analyzeImage(file, mimeType) {
   return analysis;
 }
 
-function imageChunks(analysis) {
-  const ocrContent = analysis.visibleText;
-  const visionContent = [
-    analysis.description,
-    analysis.imageType ? `Image type: ${analysis.imageType}` : "",
-    analysis.bodyRegion ? `Body region: ${analysis.bodyRegion}` : "",
-    analysis.concepts.length ? `Concepts: ${analysis.concepts.join(", ")}` : "",
-    analysis.keywords.length ? `Keywords: ${analysis.keywords.join(", ")}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  return [
-    ocrContent ? { sourceType: "image_ocr", content: ocrContent } : null,
-    visionContent ? { sourceType: "image_vision", content: visionContent } : null,
-  ].filter(Boolean);
-}
-
 async function saveImageAnalysis(media, analysis) {
   const chunks = imageChunks(analysis);
   const vectors = await createEmbeddings(chunks.map((chunk) => chunk.content));
@@ -246,6 +212,8 @@ async function saveImageAnalysis(media, analysis) {
   const { error: mediaError } = await supabase
     .from("media_items")
     .update({
+      image_title_en: analysis.titleEn || null,
+      image_title_es: analysis.titleEs || null,
       image_description: analysis.description || null,
       image_ocr_text: analysis.visibleText || null,
       image_keywords: [...new Set([...analysis.concepts, ...analysis.keywords])],

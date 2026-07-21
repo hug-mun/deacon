@@ -120,7 +120,20 @@ async function searchKnowledge(
     if (!existing || row.similarity > existing.similarity) merged.set(row.id, row);
   }
 
-  return [...merged.values()].sort((left, right) => right.similarity - left.similarity).slice(0, limit).map((row) => ({
+  const selectedRows = [...merged.values()].sort((left, right) => right.similarity - left.similarity).slice(0, limit);
+  const mediaIds = [...new Set(selectedRows.map((row) => row.media_item_id).filter((id): id is string => Boolean(id)))];
+  const { data: mediaTitles, error: titleError } = mediaIds.length
+    ? await supabase
+        .from("media_items")
+        .select("id, image_title_en, image_title_es")
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .in("id", mediaIds)
+    : { data: [], error: null };
+  if (titleError) throw new Error(`Image title lookup failed: ${titleError.message}`);
+  const titleByMediaId = new Map((mediaTitles ?? []).map((media) => [media.id, media]));
+
+  return selectedRows.map((row) => ({
     id: row.id,
     sourceType: row.source_type,
     sourceId: row.source_id,
@@ -132,6 +145,8 @@ async function searchKnowledge(
     endMs: row.end_ms,
     charStart: row.char_start,
     charEnd: row.char_end,
+    titleEn: row.media_item_id ? titleByMediaId.get(row.media_item_id)?.image_title_en ?? null : null,
+    titleEs: row.media_item_id ? titleByMediaId.get(row.media_item_id)?.image_title_es ?? null : null,
     score: row.similarity,
   }));
 }
@@ -188,7 +203,7 @@ export function createMcpServer(userId: string) {
       const { data, error } = await supabase
         .from("media_items")
         .select(
-          "id, session_id, kind, original_filename, mime_type, size_bytes, status, processing_stage, processing_progress, processing_error_code, processing_error_message, image_description, image_keywords, created_at",
+          "id, session_id, kind, original_filename, mime_type, size_bytes, status, processing_stage, processing_progress, processing_error_code, processing_error_message, image_title_en, image_title_es, image_description, image_keywords, created_at",
         )
         .eq("user_id", userId)
         .is("deleted_at", null)
@@ -212,7 +227,7 @@ export function createMcpServer(userId: string) {
       const { data: media, error } = await supabase
         .from("media_items")
         .select(
-          "id, session_id, kind, original_filename, mime_type, size_bytes, storage_key, status, processing_stage, processing_progress, processing_error_code, processing_error_message, image_description, image_ocr_text, image_keywords, created_at",
+          "id, session_id, kind, original_filename, mime_type, size_bytes, storage_key, status, processing_stage, processing_progress, processing_error_code, processing_error_message, image_title_en, image_title_es, image_description, image_ocr_text, image_keywords, created_at",
         )
         .eq("id", mediaId)
         .eq("user_id", userId)

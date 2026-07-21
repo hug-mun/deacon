@@ -5,6 +5,7 @@ import { classifyOpenAiFailure } from "../src/lib/openai/provider-error.ts";
 import { getProcessingProgress } from "../src/lib/media/processing-progress.ts";
 import { verifyPkce, safeRedirectUri } from "../src/lib/mcp/oauth.ts";
 import { createHash } from "node:crypto";
+import { imageChunks, normalizeImageAnalysis } from "../scripts/image-analysis.mjs";
 
 test("chunkText creates bounded overlapping chunks with stable locators", () => {
   const input = Array.from({ length: 5000 }, (_, index) => `word${index}`).join(" ");
@@ -84,4 +85,29 @@ test("MCP redirect validation only accepts the configured ChatGPT prefix", () =>
   assert.equal(safeRedirectUri("https://chatgpt.com/connector/oauth/callback\nattack"), false);
   if (previous === undefined) delete process.env.MCP_OAUTH_REDIRECT_PREFIX;
   else process.env.MCP_OAUTH_REDIRECT_PREFIX = previous;
+});
+
+test("image analysis keeps bilingual titles in the searchable vision chunk", () => {
+  const analysis = normalizeImageAnalysis({
+    titleEn: "Atopic dermatitis: flexural pattern",
+    titleEs: "Dermatitis atópica: patrón flexural",
+    description: "A dermatology teaching image showing an erythematous flexural pattern.",
+    concepts: ["atopic dermatitis"],
+  });
+
+  const visionChunk = imageChunks(analysis).find((chunk) => chunk.sourceType === "image_vision");
+  assert.ok(visionChunk);
+  assert.match(visionChunk.content, /Atopic dermatitis/);
+  assert.match(visionChunk.content, /Dermatitis atópica/);
+  assert.match(visionChunk.content, /erythematous flexural pattern/);
+});
+
+test("image analysis bounds generated titles and ignores invalid title values", () => {
+  const analysis = normalizeImageAnalysis({
+    titleEn: "x".repeat(200),
+    titleEs: 42,
+  });
+
+  assert.equal(analysis.titleEn.length, 140);
+  assert.equal(analysis.titleEs, "");
 });
