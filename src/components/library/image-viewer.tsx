@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type ImageViewerProps = {
   mediaId: string;
@@ -14,7 +14,13 @@ type ImageViewerProps = {
 export function ImageViewer({ mediaId, src, alt, title, englishTitle = null }: ImageViewerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  const closeViewer = useCallback(() => {
+    setIsOpen(false);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }, []);
 
   useEffect(() => {
     function handleOpenImage(event: Event) {
@@ -36,7 +42,7 @@ export function ImageViewer({ mediaId, src, alt, title, englishTitle = null }: I
     closeButtonRef.current?.focus();
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setIsOpen(false);
+      if (event.key === "Escape") closeViewer();
     }
 
     window.addEventListener("keydown", handleKeyDown);
@@ -44,7 +50,7 @@ export function ImageViewer({ mediaId, src, alt, title, englishTitle = null }: I
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isOpen]);
+  }, [closeViewer, isOpen]);
 
   function openViewer() {
     setHasError(false);
@@ -56,6 +62,7 @@ export function ImageViewer({ mediaId, src, alt, title, englishTitle = null }: I
       <button
         type="button"
         className="media-image-button"
+        ref={triggerRef}
         onClick={openViewer}
         aria-label={`Abrir imagen: ${title}`}
       >
@@ -73,7 +80,7 @@ export function ImageViewer({ mediaId, src, alt, title, englishTitle = null }: I
         <div
           className="image-viewer-backdrop"
           role="presentation"
-          onClick={() => setIsOpen(false)}
+          onClick={closeViewer}
         >
           <div
             className="image-viewer"
@@ -91,7 +98,7 @@ export function ImageViewer({ mediaId, src, alt, title, englishTitle = null }: I
                 ref={closeButtonRef}
                 type="button"
                 className="image-viewer-close"
-                onClick={() => setIsOpen(false)}
+                onClick={closeViewer}
                 aria-label="Cerrar imagen"
               >
                 <span aria-hidden="true">×</span>
