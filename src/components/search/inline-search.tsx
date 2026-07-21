@@ -83,6 +83,9 @@ export function InlineSearch() {
     }
 
     target.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.dispatchEvent(new CustomEvent("deacon:open-image", {
+      detail: { mediaId: result.media_item_id },
+    }));
     target.classList.add("search-result-target");
     window.setTimeout(() => target.classList.remove("search-result-target"), 1800);
   }

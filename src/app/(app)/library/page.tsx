@@ -1,10 +1,10 @@
-/* eslint-disable @next/next/no-img-element */
 import { redirect } from "next/navigation";
 import { AppNav } from "@/components/app/app-nav";
 import { PdfReader } from "@/components/library/pdf-reader";
 import { InlineSearch } from "@/components/search/inline-search";
 import { MediaProcessingStatus } from "@/components/library/media-processing-status";
 import { UploadPanel } from "@/components/upload/upload-panel";
+import { ImageViewer } from "@/components/library/image-viewer";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -92,7 +92,13 @@ export default async function LibraryPage() {
               return (
                 <article className="media-card" id={`media-${item.id}`} key={item.id}>
                   {item.signedUrl ? (
-                    <img src={item.signedUrl} alt={item.original_filename} />
+                    <ImageViewer
+                      mediaId={item.id}
+                      src={item.signedUrl}
+                      alt={item.image_title_es ?? item.original_filename}
+                      title={item.image_title_es ?? item.image_title_en ?? item.original_filename}
+                      englishTitle={item.image_title_en}
+                    />
                   ) : (
                     <div className="media-placeholder">Vista previa no disponible</div>
                   )}
