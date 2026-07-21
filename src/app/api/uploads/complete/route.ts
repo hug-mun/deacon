@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -119,5 +119,22 @@ export async function POST(request: Request) {
     mediaId: media.id,
     status: "processing",
   });
+
+  // Start the first processing pass immediately. The Vercel cron remains the
+  // safety net for queued files and retries, so a user does not wait for the
+  // next minute tick after a successful upload.
+  after(async () => {
+    try {
+      // @ts-expect-error The worker is an ESM module shared with the Docker runtime.
+      const { runWorkerOnce } = await import("../../../../../scripts/process-media.mjs");
+      await runWorkerOnce();
+    } catch (error) {
+      console.error("[deacon][uploads.complete] immediate processing failed", {
+        mediaId: media.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   return NextResponse.json({ status: "processing", media_id: media.id });
 }

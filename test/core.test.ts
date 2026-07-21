@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { chunkText } from "../src/lib/retrieval/chunk-text.ts";
 import { classifyOpenAiFailure } from "../src/lib/openai/provider-error.ts";
+import { getProcessingProgress } from "../src/lib/media/processing-progress.ts";
 import { verifyPkce, safeRedirectUri } from "../src/lib/mcp/oauth.ts";
 import { createHash } from "node:crypto";
 
@@ -37,6 +38,34 @@ test("OpenAI quota and rate-limit failures remain distinguishable", () => {
     classifyOpenAiFailure(429, { error: { code: "rate_limit_exceeded" } }).kind,
     "rate_limited",
   );
+});
+
+test("processing progress never pretends a queued file is complete", () => {
+  const queued = getProcessingProgress({
+    status: "processing",
+    actualProgress: 0,
+    startedAt: 0,
+    now: 45_000,
+  });
+  assert.equal(queued.progress, 53);
+  assert.equal(queued.estimated, true);
+
+  const longRunning = getProcessingProgress({
+    status: "processing",
+    actualProgress: 0,
+    startedAt: 0,
+    now: 300_000,
+  });
+  assert.equal(longRunning.progress, 90);
+  assert.equal(longRunning.estimated, true);
+
+  const ready = getProcessingProgress({
+    status: "ready",
+    actualProgress: 100,
+    startedAt: 0,
+    now: 300_000,
+  });
+  assert.deepEqual(ready, { progress: 100, estimated: false });
 });
 
 test("MCP PKCE validation accepts S256 and rejects a different verifier", () => {

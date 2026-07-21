@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { appPath } from "@/lib/app-path";
+import { getProcessingProgress } from "@/lib/media/processing-progress";
 
 type ProcessingStatusProps = {
   mediaId: string;
@@ -22,7 +23,7 @@ function stageLabel(status: string, stage: string) {
   if (status === "uploading") return "Cargando archivo";
 
   return {
-    queued: "En cola",
+    queued: "Procesando",
     reading: "Leyendo el PDF",
     saving: "Guardando la transcripción",
     embedding: "Mejorando la búsqueda",
@@ -50,6 +51,8 @@ export function MediaProcessingStatus({
 }: ProcessingStatusProps) {
   const router = useRouter();
   const [isRetrying, setIsRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const [processingStartedAt, setProcessingStartedAt] = useState(() => Date.now());
   const [state, setState] = useState({
     status: initialStatus,
     stage: initialStage,
@@ -70,6 +73,9 @@ export function MediaProcessingStatus({
         });
         if (!response.ok || cancelled) return;
         const next = await response.json();
+        if (next.status === "processing" && state.status !== "processing") {
+          setProcessingStartedAt(Date.now());
+        }
         setState({
           status: next.status,
           stage: next.processing_stage,
@@ -94,14 +100,23 @@ export function MediaProcessingStatus({
     };
   }, [mediaId, router, state.status]);
 
-  const progress = Math.max(0, Math.min(100, state.progress ?? 0));
+  const { progress, estimated } = getProcessingProgress({
+    status: state.status,
+    actualProgress: state.progress,
+    startedAt: processingStartedAt,
+  });
   const label = stageLabel(state.status, state.stage);
 
   async function retry() {
     setIsRetrying(true);
+    setRetryError(null);
     try {
       const response = await fetch(appPath(`/api/media/${mediaId}/retry`), { method: "POST" });
-      if (!response.ok) return;
+      if (!response.ok) {
+        setRetryError("No se pudo reintentar. Vuelve a intentarlo en un momento.");
+        return;
+      }
+      setProcessingStartedAt(Date.now());
       setState({ status: "processing", stage: "queued", progress: 0, errorCode: null, errorMessage: null, errorRequestId: null });
     } finally {
       setIsRetrying(false);
@@ -112,13 +127,13 @@ export function MediaProcessingStatus({
     <div className={`processing-status processing-status-${state.status}`}>
       <div className="processing-status-line">
         <span>{label}</span>
-        {ACTIVE_STATUSES.has(state.status) ? <strong>{progress}%</strong> : null}
+        {ACTIVE_STATUSES.has(state.status) ? <strong>{estimated ? `${progress}% aprox.` : `${progress}%`}</strong> : null}
       </div>
       {ACTIVE_STATUSES.has(state.status) ? (
         <div
-          className="processing-progress"
+          className={`processing-progress${estimated ? " processing-progress-estimated" : ""}`}
           role="progressbar"
-          aria-label={`Progreso: ${progress}%`}
+          aria-label={estimated ? `Progreso aproximado: ${progress}%` : `Progreso: ${progress}%`}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={progress}
@@ -126,7 +141,7 @@ export function MediaProcessingStatus({
           <span style={{ width: `${progress}%` }} />
         </div>
       ) : null}
-      {state.status === "failed" && state.errorCode ? (
+      {state.status === "failed" ? (
         <>
           <small>{errorLabel(state.errorCode)}</small>
           {state.errorMessage ? <small>{state.errorMessage}</small> : null}
@@ -134,6 +149,7 @@ export function MediaProcessingStatus({
           <button type="button" className="processing-retry" onClick={retry} disabled={isRetrying}>
             {isRetrying ? "Reintentando…" : "Reintentar"}
           </button>
+          {retryError ? <small>{retryError}</small> : null}
         </>
       ) : null}
     </div>

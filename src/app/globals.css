@@ -1308,6 +1308,21 @@ h3 {
   transition: width 220ms ease;
 }
 
+.processing-progress-estimated span {
+  background: linear-gradient(90deg, var(--green) 0%, #9bc9ad 50%, var(--green) 100%);
+  background-size: 200% 100%;
+  animation: processing-progress-shimmer 1.4s linear infinite;
+}
+
+@keyframes processing-progress-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .processing-progress-estimated span { animation: none; }
+}
+
 .processing-status-ready .processing-status-line span {
   color: var(--green);
 }
