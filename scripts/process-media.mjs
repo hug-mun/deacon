@@ -1,13 +1,8 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { hostname } from "node:os";
-import { join } from "node:path";
 import { createClient } from "@supabase/supabase-js";
+import pdfParse from "pdf-parse";
 import WebSocket from "ws";
 
-const execFileAsync = promisify(execFile);
 const POLL_MS = 1500;
 const EMBEDDING_MODEL = "text-embedding-3-small";
 const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-5.6-luna";
@@ -431,67 +426,58 @@ async function embedTranscript(media, transcript) {
 }
 
 async function processPdf(media) {
-  const workDir = await mkdtemp(join(tmpdir(), "deacon-pdf-"));
-  const pdfPath = join(workDir, "original.pdf");
+  console.info("[deacon][worker] downloading PDF", { mediaId: media.id });
+  const { data: file, error: downloadError } = await supabase.storage
+    .from("media")
+    .download(media.storage_key);
 
-  try {
-    console.info("[deacon][worker] downloading PDF", { mediaId: media.id });
-    const { data: file, error: downloadError } = await supabase.storage
-      .from("media")
-      .download(media.storage_key);
-
-    if (downloadError || !file) {
-      throw new Error(downloadError?.message ?? "Storage returned no file");
-    }
-
-    await writeFile(pdfPath, Buffer.from(await file.arrayBuffer()));
-    await updateProgress(media.id, {
-      processing_stage: "reading",
-      processing_progress: 35,
-    });
-
-    console.info("[deacon][worker] extracting PDF text", { mediaId: media.id });
-    const { stdout } = await execFileAsync("pdftotext", [pdfPath, "-"], {
-      maxBuffer: 50 * 1024 * 1024,
-    });
-
-    await updateProgress(media.id, {
-      processing_stage: "saving",
-      processing_progress: 80,
-    });
-
-    const { error: transcriptError } = await supabase
-      .from("transcripts")
-      .upsert(
-        {
-          user_id: media.user_id,
-          media_item_id: media.id,
-          full_text: stdout.trim(),
-          language: null,
-        },
-        { onConflict: "media_item_id" },
-      );
-
-    if (transcriptError) {
-      throw new Error(`Transcript save failed (${transcriptError.code}): ${transcriptError.message}`);
-    }
-
-    await ensureTranscriptChunks(media, { full_text: stdout.trim() });
-
-    await updateProgress(media.id, {
-      status: "ready",
-      processing_stage: "ready",
-      processing_progress: 100,
-      processing_error_code: null,
-      processing_error_service: null,
-      processing_error_message: null,
-      processing_error_request_id: null,
-      processing_completed_at: new Date().toISOString(),
-    });
-    console.info("[deacon][worker] PDF ready", { mediaId: media.id, textLength: stdout.trim().length });
-  } finally {
-    await rm(workDir, { recursive: true, force: true });
+  if (downloadError || !file) {
+    throw new Error(downloadError?.message ?? "Storage returned no file");
   }
+
+  await updateProgress(media.id, {
+    processing_stage: "reading",
+    processing_progress: 35,
+  });
+
+  console.info("[deacon][worker] extracting PDF text", { mediaId: media.id });
+  const parsed = await pdfParse(Buffer.from(await file.arrayBuffer()));
+  const text = parsed.text.trim();
+
+  await updateProgress(media.id, {
+    processing_stage: "saving",
+    processing_progress: 80,
+  });
+
+  const { error: transcriptError } = await supabase
+    .from("transcripts")
+    .upsert(
+      {
+        user_id: media.user_id,
+        media_item_id: media.id,
+        full_text: text,
+        language: null,
+      },
+      { onConflict: "media_item_id" },
+    );
+
+  if (transcriptError) {
+    throw new Error(`Transcript save failed (${transcriptError.code}): ${transcriptError.message}`);
+  }
+
+  await ensureTranscriptChunks(media, { full_text: text });
+
+  await updateProgress(media.id, {
+    status: "ready",
+    processing_stage: "ready",
+    processing_progress: 100,
+    processing_error_code: null,
+    processing_error_service: null,
+    processing_error_message: null,
+    processing_error_request_id: null,
+    processing_completed_at: new Date().toISOString(),
+  });
+  console.info("[deacon][worker] PDF ready", { mediaId: media.id, textLength: text.length });
 }
 
 async function processImage(media) {
@@ -636,7 +622,16 @@ async function poll() {
   }
 
   const media = mediaItems?.[0];
-  if (media) await processOne(media);
+  if (!media) return null;
+  await processOne(media);
+  return media.id;
+}
+
+export async function runWorkerOnce() {
+  const processedMediaId = await poll();
+  await pollPendingEmbeddings();
+  await heartbeat(true);
+  return { processedMediaId };
 }
 
 async function pollPendingEmbeddings() {
@@ -754,11 +749,11 @@ async function pollPendingEmbeddings() {
   }
 }
 
-console.info("[deacon][worker] started", { pollMs: POLL_MS });
-await writeHealth("ok", { last_success_at: new Date().toISOString() });
-while (true) {
-  await poll();
-  await pollPendingEmbeddings();
-  await heartbeat();
-  await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+if (process.argv[1]?.endsWith("scripts/process-media.mjs")) {
+  console.info("[deacon][worker] started", { pollMs: POLL_MS });
+  await writeHealth("ok", { last_success_at: new Date().toISOString() });
+  while (true) {
+    await runWorkerOnce();
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
 }
