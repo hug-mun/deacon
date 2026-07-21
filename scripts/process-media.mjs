@@ -1,6 +1,8 @@
 import { hostname } from "node:os";
 import { createClient } from "@supabase/supabase-js";
-import pdfParse from "pdf-parse";
+// Import the parser implementation directly. The package root runs its own
+// fixture test when bundled as a serverless dependency.
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import WebSocket from "ws";
 
 const POLL_MS = 1500;
