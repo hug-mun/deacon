@@ -236,6 +236,24 @@ The login form contains visible diagnostics. Tap **Check again** to test Supabas
 
 The password route uses a same-origin server endpoint so the session cookie is set by the application before navigating to `/library`. It also has a no-JavaScript form fallback.
 
+### Create or reset a production user from the command line
+
+The production user command targets the Deacon Supabase project, uses the locally authenticated Supabase CLI to obtain the service-role key, and never prints credentials. If the email already exists, it updates that user's password and confirms the email.
+
+Prompt for the password without putting it in shell history:
+
+```bash
+npm run auth:create-user -- --email user@example.com
+```
+
+For a non-interactive shell, pass the password through standard input:
+
+```bash
+printf '%s\n' 'replace-with-a-password' | npm run auth:create-user -- --email user@example.com --password-stdin
+```
+
+This command requires an authenticated Supabase CLI session (`supabase login`). Use a unique production password and do not commit it to the repository.
+
 ## Local upload processing
 
 `./scripts/run-local.sh` starts the Next.js app and a separate media worker. The worker watches `media_items.status=processing`, extracts text from PDFs with `pdftotext`, stores the transcript and searchable text chunks, and moves the item to `ready`. Progress is stored on the media row and the library polls it every 1.5 seconds. Leaving the library page does not stop the worker; it continues until the local app is stopped.
