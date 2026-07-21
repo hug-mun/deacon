@@ -43,6 +43,22 @@ The OAuth discovery endpoints are:
 
 Production must set `MCP_PUBLIC_URL` to the canonical HTTPS `/mcp` URL and provide a long random `MCP_OAUTH_SIGNING_SECRET`. The authorization flow reuses the normal Deacon login and only grants the `knowledge:read` scope.
 
+## Connect the production server to ChatGPT
+
+The one-time connector URL is:
+
+```text
+https://deacon.vercel.app/mcp
+```
+
+When ChatGPT opens it, Deacon redirects to its normal login, asks for consent, and issues a token bound to that Deacon account. After the connection is saved, the same private library is available from any ChatGPT conversation where that connector is enabled. The ChatGPT account and the Deacon account are linked by the Deacon login during the connection; they are not implicitly the same identity.
+
+Verify the deployed configuration without credentials with:
+
+```bash
+npm run test:mcp:remote
+```
+
 Run the smoke test against a local app with:
 
 ```bash
