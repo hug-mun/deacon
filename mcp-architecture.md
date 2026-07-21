@@ -43,6 +43,8 @@ The OAuth discovery endpoints are:
 
 Production must set `MCP_PUBLIC_URL` to the canonical HTTPS `/mcp` URL and provide a long random `MCP_OAUTH_SIGNING_SECRET`. The authorization flow reuses the normal Deacon login and only grants the `knowledge:read` scope.
 
+The approval form uses a `303 See Other` redirect so the OAuth client follows the ChatGPT callback with `GET` after the consent `POST`.
+
 ## Connect the production server to ChatGPT
 
 The one-time connector URL is:

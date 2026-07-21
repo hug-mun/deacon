@@ -132,5 +132,8 @@ export async function POST(request: Request) {
   const callback = new URL(validated.redirectUri);
   callback.searchParams.set("code", rawCode);
   if (validated.state) callback.searchParams.set("state", validated.state);
-  return NextResponse.redirect(callback);
+  // Consent is submitted with POST. 303 makes the OAuth client follow the
+  // callback with GET; a default 307 would replay the POST at ChatGPT's
+  // callback endpoint and result in a Bad Request.
+  return NextResponse.redirect(callback, 303);
 }
