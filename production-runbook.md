@@ -42,6 +42,8 @@ MCP_OAUTH_REDIRECT_PREFIX=https://chatgpt.com/connector/oauth/
 
 Do not expose `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, or `MCP_OAUTH_SIGNING_SECRET` as `NEXT_PUBLIC_*` variables.
 
+`RESEND_FROM_EMAIL` must be a sender verified in Resend. The worker uses these two variables to send processing-failure details to `hello@hugmun.ai`; missing or broken email configuration must not block uploads, but it will be logged as an operational issue.
+
 ## 3. Media worker
 
 Deploy [`Dockerfile.worker`](Dockerfile.worker) as an always-on worker. It includes `pdftotext` for transcript/PDF processing.
@@ -74,7 +76,8 @@ Before sharing the link:
 4. Upload one JPG/PNG, one HEIC image, and one PDF transcript.
 5. Confirm all three reach `Lista`, then search for visible slide text and a transcript phrase.
 6. Connect ChatGPT to `https://www.hugmun.ai/deacon/mcp` and verify OAuth discovery, `search_knowledge`, `get_media_item`, and bounded `get_transcript` retrieval.
-7. Remove the test account and test files.
+7. Confirm the library exposes retry/delete actions for a failed item and that the delete confirmation sends content to the 30-day recycle bin. Do not exhaust production credits to test this; use a local/mocked provider failure.
+8. Remove the test account and test files.
 
 ## 6. Ongoing monitoring
 
@@ -83,6 +86,8 @@ Monitor `/api/health` every 1–5 minutes. Investigate immediately when:
 - HTTP 503 is returned;
 - `media_worker` is `down` or its heartbeat is older than 90 seconds;
 - the library shows `openai_vision` permission or quota errors;
+- the library shows `embedding_quota_exhausted`, `embedding_permission_denied`, or repeated `processing_failed` items;
+- worker logs report `support email not configured` or `support email failed`;
 - uploaded files remain in `processing` for more than a few minutes.
 
 Before uploading any material that could identify a patient, confirm that the material is de-identified and that the production storage, model provider, and organizational policies are appropriate for that material.

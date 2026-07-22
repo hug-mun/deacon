@@ -5,17 +5,20 @@ Deacon is a private knowledge base for master classes. The MVP is designed for a
 The current implementation has:
 
 - Next.js on Vercel-style hosting;
-- local Supabase Auth, Postgres, pgvector, Realtime, and Storage;
+- Supabase Auth, Postgres, pgvector, Realtime, and private Storage;
 - email/password authentication;
 - RLS-protected user data;
 - PDF and image upload with exact duplicate protection;
 - AI image understanding that extracts visible text, visual descriptions, anatomy, and study keywords into searchable chunks;
 - asynchronous PDF text extraction, transcript reading, and progress polling;
 - lexical transcript search that works without an embedding provider, plus optional vector/hybrid ranking;
-- transcript text download and a retry action for failed processing;
+- transcript text download, retry, rollback, and graceful failure handling;
+- iPad-friendly image viewer, one-at-a-time PDF reader, cursor pagination, and virtualized library pages;
+- 30-day recycle bin for deleted content and safe delete controls away from library cards;
+- Resend support alerts for processing failures, addressed to `hello@hugmun.ai`;
 - service diagnostics at `/api/diagnostics`, including a deliberate deep vision probe;
 - a local read-only MCP endpoint at `/mcp` with knowledge search, library listing, media inspection, and bounded transcript-reading tools;
-- temporary remote phone testing through ngrok and Cloudflare Tunnel.
+- temporary remote phone testing through ngrok and Cloudflare Tunnel;
 - a production-ready worker container with PDF extraction and service heartbeats.
 
 Read the system design in [architecture.md](architecture.md), the product design in [masterclass-kb-mvp-spec.md](masterclass-kb-mvp-spec.md), the build plan in [masterclass-kb-build-spec.md](masterclass-kb-build-spec.md), and the [production runbook](production-runbook.md).
@@ -260,6 +263,18 @@ This command requires an authenticated Supabase CLI session (`supabase login`). 
 
 The worker always creates transcript chunks. If `OPENAI_API_KEY` is absent, PostgreSQL full-text search remains available for PDFs and notes. If the key is present, the worker backfills `text-embedding-3-small` vectors and the search API combines lexical and vector results. Images use the configured `OPENAI_VISION_MODEL` (default `gpt-5.6-luna`) to extract visible text and a searchable visual description before embedding both. If an embedding or vision request fails because of unavailable credits, permissions, or provider configuration, the worker rolls back the partial index, marks the item retryable, and sends an operational alert to `hello@hugmun.ai` when `RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured.
 
+### Processing failure and recovery
+
+The original upload is kept so it can be retried, but derived data is transactional from the user's perspective:
+
+- If embedding or vision processing fails because of credits, billing, permissions, or provider configuration, the worker deletes the partial transcript, chunks, and image metadata before marking the item `failed`.
+- The library shows a safe explanation, a `Reintentar` action, and a `Borrar` action for failed items. Retry reuses the original file after the underlying issue is fixed.
+- A failed item is not returned by search or MCP. It remains in the library so the user can retry or move it to the 30-day recycle bin.
+- The worker sends a technical email containing the media ID, service, error code, and provider request ID to `hello@hugmun.ai`. The email uses Resend and requires a verified `RESEND_FROM_EMAIL`; a failed alert email never crashes processing.
+- Upload rows left in `uploading` for more than 15 minutes become `upload_incomplete` instead of remaining at `0%` forever.
+
+The user-facing message is intentionally generic: “Estamos teniendo problemas para añadir más información. Escríbenos a hello@hugmun.ai para que lo revisemos.” Provider error details stay in worker logs and the operational status fields.
+
 The image lane requires an API key with the `model.request` permission in addition to embeddings access. A restricted key that can call `/v1/embeddings` but cannot call a vision model will leave image items in a failed state with a permission-specific message.
 
 Every media processing failure records the responsible service, a safe user-facing explanation, and—when the provider supplies one—the request ID. The library shows these details and the retry action. The boundaries are `supabase_database`, `supabase_storage`, `openai_vision`, `openai_embeddings`, `media_worker`, and `mcp`; this keeps the MVP operationally diagnosable without splitting the deployment into unnecessary network microservices.
@@ -285,7 +300,7 @@ The current upload flow handles one PDF or image at a time:
 7. The server verifies the object and changes the row to `status=processing`.
 8. The library renders a signed preview URL or the full-width PDF transcript reader.
 
-Local development uses Supabase Storage behind the storage boundary. Production will use Cloudflare R2 and presigned multipart uploads without changing the core session/media API.
+Local development and the current production deployment use private Supabase Storage behind the storage boundary. Cloudflare R2 and presigned multipart uploads are a future migration option and should not change the core session/media API.
 
 Storage keys use this shape:
 
@@ -306,7 +321,7 @@ MCP_OAUTH_ISSUER=https://www.hugmun.ai/deacon
 
 The existing hugmun.ai Vercel project must then route `/deacon/*` to the Deacon deployment, or both sites must be combined into one Vercel project. A separate `deacon.hugmun.ai` deployment is the simpler fallback if the current Astro project cannot add a cross-project rewrite. OAuth metadata and client-side API calls are base-path aware.
 
-The web deployment and media worker are separate runtime responsibilities. Deploy `Dockerfile.worker` to a small always-on container service with the same Supabase and OpenAI environment variables. The worker must remain running; `/api/health` reports `media_worker: down` when its heartbeat is older than 90 seconds. The production web app should be monitored at `/api/health`, and the authenticated library diagnostics should be used for human-readable incident details.
+The web deployment and media worker are separate runtime responsibilities. Deploy `Dockerfile.worker` to a small always-on container service with the same Supabase and OpenAI environment variables plus `RESEND_API_KEY` and a verified `RESEND_FROM_EMAIL` for support alerts. Alternatively, Vercel Cron can trigger `GET /api/worker/process` when the deployment is configured for it. The worker must remain running; `/api/health` reports `media_worker: down` when its heartbeat is older than 90 seconds. The production web app should be monitored at `/api/health`, and the authenticated library diagnostics should be used for human-readable incident details.
 
 The Storage policies only allow an authenticated user to access objects under their own `users/{user_id}/` prefix.
 

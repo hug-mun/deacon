@@ -1,10 +1,10 @@
 # MasterClass Knowledge Base — Architecture
 
-**Status:** Initial implementation architecture  
-**Date:** July 12, 2026  
+**Status:** Implemented MVP architecture
+**Date:** July 22, 2026
 **Source documents:** [MVP technical design](masterclass-kb-mvp-spec.md) · [Build spec and MVP plan](masterclass-kb-build-spec.md)
 
-This document turns the two specifications into an implementation map. The specifications remain the product and technical source of truth; this file explains how their parts fit together and in what order to build them.
+This document turns the two specifications into an implementation map. The specifications remain the product and technical source of truth; this file explains how the deployed Deacon implementation fits together, including the current Supabase Storage path and the future R2/Inngest migration boundary.
 
 ## 1. Architectural goal
 
@@ -18,7 +18,7 @@ Build a private, single-user-at-a-time knowledge base for recorded master classe
 The architecture is designed around five rules:
 
 1. Large files bypass the application server and go directly to object storage.
-2. The database stores metadata, relationships, text, vectors, and storage pointers—not media bytes.
+2. The database stores metadata, relationships, text, optional vectors, and storage pointers—not media bytes.
 3. Upload acknowledgement is fast; expensive work is asynchronous.
 4. Every user-owned record is protected by Postgres RLS and every signed storage URL is ownership-checked.
 5. Classification is optional: an unsorted session is a normal session whose `channel_id` is `null`.
@@ -31,37 +31,38 @@ flowchart LR
     V["Next.js app on Vercel"]
     A["Supabase Auth"]
     D["Supabase Postgres + pgvector"]
-    R["Cloudflare R2"]
-    Q["Inngest"]
-    P["Processing workers"]
-    AI["Whisper + embeddings + vision + chat model"]
+    S["Private Supabase Storage"]
+    W["Deacon media worker\nDocker or Vercel Cron"]
+    AI["OpenAI embeddings + vision"]
+    E["Resend support alerts"]
 
     U -->|JWT, metadata, queries| V
-    U -->|multipart media upload| R
+    U -->|authenticated direct upload| S
     V <--> A
     V <--> D
-    V -->|presigned URLs| U
-    V -->|events| Q
-    Q --> P
-    P <--> R
-    P <--> D
-    P <--> AI
-    V -->|query embedding / RAG prompt| AI
+    V -->|prepare / complete| U
+    V -->|worker trigger| W
+    W <--> S
+    W <--> D
+    W <--> AI
+    W -->|processing failures| E
+    V -->|query embedding / hybrid retrieval| AI
 ```
 
 ### Runtime responsibilities
 
 | Component | Responsibility | Must not do |
 |---|---|---|
-| Next.js frontend | iPad-first UI, batch selection, upload orchestration, library, search, chat, status display | Hold service secrets or upload large files through Vercel |
-| Next.js server/API | Authenticate requests, create metadata, presign R2 operations, issue signed download URLs, query Postgres, start jobs | Trust a client-supplied `user_id` or expose public media URLs |
+| Next.js frontend | iPad-first UI, file selection/drag and drop, library virtualization, search, image viewer, PDF reader, status display | Hold service secrets or upload large files through Vercel |
+| Next.js server/API | Authenticate requests, create metadata, verify Storage uploads, issue signed download URLs, query Postgres, expose worker/health endpoints | Trust a client-supplied `user_id` or expose public media URLs |
 | Supabase Auth | Email/password login, account creation, JWT issuance, refresh sessions | Store application media metadata |
-| Postgres + pgvector | Relational model, ownership enforcement, text chunks, vector retrieval, chat history | Store original video/image bytes |
-| Cloudflare R2 | Original media, thumbnails, posters, optional playback derivatives | Be public or accessed without a short-lived signed URL |
-| Inngest | Durable events, retries, fan-out, scheduling, low-priority work | Be the source of truth for item status |
-| Workers | Audio extraction, transcription, OCR/vision, thumbnails, embeddings, video dedup, purge | Run non-idempotent steps that create duplicate chunks on retry |
+| Postgres + pgvector | Relational model, RLS ownership enforcement, text chunks, lexical/vector retrieval, processing status, recycle-bin metadata | Store original media bytes |
+| Private Supabase Storage | Original PDFs/images under user-scoped keys and signed media access | Be public or accessed without authenticated ownership checks |
+| Deacon media worker | PDF extraction, image vision analysis, chunks, embeddings, stale-upload cleanup, recycle-bin purge, health heartbeat | Leave partial derived data after a failed indexing operation |
+| OpenAI | Image understanding and text embeddings; query embeddings for semantic search | Be assumed available without quota/permission handling |
+| Resend | Operational email alerts to `hello@hugmun.ai` for processing failures | Be required for the upload itself to complete |
 
-For local development, Phase 2 uses a private Supabase Storage bucket with the same user-scoped key layout. The application reaches storage through a small adapter boundary; production will use Cloudflare R2 and presigned multipart uploads without changing the session/media API or library UI.
+The current deployment uses a private Supabase Storage bucket. The browser uploads directly after `/api/uploads/prepare`, and `/api/uploads/complete` verifies the object before queuing processing. Cloudflare R2 and presigned multipart uploads remain a future storage migration; they should preserve the same session/media API and library UI.
 
 ## 3. Domain model
 
@@ -104,7 +105,7 @@ erDiagram
 | `media_items` | File metadata and dedup fingerprints | `file_hash` indexed per user; status, ownership, and a safe processing-error field required |
 | `notes` | User-authored text | Belongs to one session; edits replace its derived chunks |
 | `transcripts` | Full downloadable video transcript | One transcript per video; language stored |
-| `text_chunks` | Search and RAG retrieval units | 1536-dimensional text vector; locator fields preserved |
+| `text_chunks` | Search and RAG retrieval units | Optional 1536-dimensional text vector plus lexical `search_vector`; locator fields preserved |
 | `duplicate_flags` | Non-destructive suspected duplicate record | `open`, `dismissed`, or `resolved` |
 | `chat_messages` | Optional persistent chat history | User-scoped; citations stored as JSONB |
 
@@ -122,7 +123,7 @@ Recommended indexes:
 
 The text and image vectors are different types of evidence and must never be used interchangeably:
 
-- `text_chunks.embedding` is a 1536-dimensional multilingual text vector for search and chat.
+- `text_chunks.embedding` is an optional 1536-dimensional multilingual text vector for semantic search and chat; `search_vector` supports lexical fallback.
 - `media_items.clip_embedding` is a 512-dimensional visual fingerprint for image deduplication only.
 
 ## 4. Trust and security boundaries
@@ -133,7 +134,7 @@ The text and image vectors are different types of evidence and must never be use
 2. Every API request sends `Authorization: Bearer <jwt>`.
 3. The server validates the token and derives `user_id` from it.
 4. Database operations use the authenticated identity and RLS policies.
-5. The server returns only short-lived signed R2 URLs after checking the owning `media_items` row.
+5. The server returns only short-lived signed Supabase Storage URLs after checking the owning `media_items` row.
 
 `user_id` is never accepted as an authority-bearing field from the request body.
 
@@ -152,7 +153,7 @@ Vector retrieval must include an explicit user predicate in addition to RLS. Ret
 
 Background workers use an internal credential because they run without the browser JWT. Their event payloads are generated server-side, and every worker query is scoped by the `media_id` and `user_id` in that event. Workers must not expose a public endpoint that accepts arbitrary internal identifiers.
 
-### R2 isolation
+### Storage isolation
 
 Use a private bucket and keys shaped as:
 
@@ -163,17 +164,32 @@ users/{user_id}/{media_id}/poster.jpg
 users/{user_id}/{media_id}/playback.mp4   # optional, only if transcoding is enabled
 ```
 
-The backend checks ownership before issuing either upload or download signatures. Signed URLs should expire quickly, for example after five minutes. No R2 bucket or object is public.
+The current backend checks ownership before issuing signed Supabase Storage download URLs. Signed URLs expire quickly, currently five minutes. The bucket is private. The same key layout and ownership rules apply if storage moves to R2 later.
 
 ## 5. Upload and session architecture
 
+### Current deployed upload flow
+
+The production MVP currently accepts one PDF or image at a time through the browser and private Supabase Storage:
+
+1. The browser normalizes HEIC when needed and computes a SHA-256 hash.
+2. `POST /api/uploads/prepare` authenticates the user, creates or reuses a session, checks exact duplicates, and creates a `media_items` row with `status=uploading`.
+3. The browser uploads the file directly to the private `media` bucket.
+4. `POST /api/uploads/complete` verifies that the Storage object exists and moves the row to `status=processing`.
+5. The media worker processes the row asynchronously. The browser polls the status endpoint and renders an estimated progress value while the worker reports coarse stages.
+6. A stale `uploading` row older than 15 minutes is marked `failed` with `processing_error_code=upload_incomplete`, so it cannot remain at `0%` forever.
+
+The original file is retained when processing fails so the user can retry after the cause is fixed. Exact duplicates and items recovered from the recycle bin are handled before a new Storage upload is started.
+
 ### Batch semantics
 
-One user-selected batch becomes one session. The UI should create or initialize that session silently before starting file uploads; the user is asked for at most one date for the batch. The session begins unsorted and can later be assigned to a channel.
+The current UI lets the user select multiple files, processes them sequentially, and automatically creates or reuses one session for the batch using the local date. The session begins unsorted and can later be assigned to a channel.
 
-The cleanest implementation is a small batch initialization operation that returns a `session_id` and accepts the inferred/default session date. All subsequent presign requests carry that `session_id`. If the first implementation keeps the existing endpoint set, the first presign can create the session and return the id for the remaining files; the behavior must still be atomic and invisible to the user.
+`POST /api/uploads/prepare` performs the session initialization as part of preparing each file; the browser does not need to manage a separate session initialization request.
 
-### Fast lane
+### Future multipart lane
+
+The following sequence is the planned R2/Inngest version, not the current Supabase Storage deployment:
 
 ```mermaid
 sequenceDiagram
@@ -205,7 +221,7 @@ sequenceDiagram
     end
 ```
 
-Use Uppy with `AwsS3Multipart`, a concurrency cap of roughly 3–4, and resumable multipart uploads. Vercel never receives the media bytes.
+The current Supabase Storage implementation uploads directly from the browser. The planned R2 migration may use Uppy with `AwsS3Multipart`, a concurrency cap of roughly 3–4, and resumable multipart uploads; Vercel should never receive the media bytes.
 
 ### Deduplication states
 
@@ -218,7 +234,7 @@ Deduplication behavior:
 3. CLIP cosine after image upload: visually similar image warning.
 4. Video keyframes in a low-priority job: library badge only.
 
-Warnings never delete automatically. Skipping a newly uploaded image deletes its R2 object and soft-deletes or removes its pending row according to the final upload-state implementation.
+Warnings never delete automatically. Skipping a newly uploaded image deletes its Storage object and soft-deletes or removes its pending row according to the final upload-state implementation.
 
 ### Date and format handling
 
@@ -235,39 +251,35 @@ Every processing function is keyed by `media_id`, safe to retry, and safe to run
 
 ```mermaid
 flowchart TD
-    E["media.accepted"] --> F["Inngest media processor"]
-    F --> K{Kind}
-    K -->|image| I1["HEIC check / conversion"]
-    I1 --> I2["Vision call: OCR + description"]
-    I2 --> I3["Text chunks + embeddings"]
-    I1 --> I4["Thumbnail"]
-    I1 --> I5["CLIP fingerprint"]
-    K -->|video| V1["ffmpeg audio extraction"]
-    V1 --> V2["Whisper transcription"]
-    V2 --> V3["Full transcript + timestamped chunks"]
-    V3 --> V4["Text embeddings"]
-    K -->|note| N1["Chunk note"]
-    N1 --> N2["Text embeddings"]
-    V3 --> P["Poster frame"]
-    V3 --> D["Low-priority keyframe dedup"]
-    I3 --> R["Mark media ready"]
-    I4 --> R
-    I5 --> R
-    V4 --> R
-    P --> R
+    U["media_items.status=processing"] --> W["process-media worker"]
+    W --> K{Kind}
+    K -->|PDF| P1["Download and extract text"]
+    P1 --> P2["Save transcript + lexical chunks"]
+    P2 --> P3["Backfill embeddings when configured"]
+    K -->|image| I1["Download image"]
+    I1 --> I2["Vision: bilingual title, OCR, description"]
+    I2 --> I3["Search chunks + embeddings"]
+    P3 --> R["Mark media ready"]
+    I3 --> R
+    P3 -->|credits / permissions / provider error| X["Rollback derived data"]
+    I3 -->|credits / permissions / provider error| X
+    X --> F["Mark failed + keep original for retry"]
+    F --> E["Email hello@hugmun.ai via Resend"]
 ```
 
 ### Processing details
 
-**Image:** convert HEIC if necessary, make the thumbnail, call the vision model once for OCR and description, store two chunk types, and embed both. CLIP is computed early enough to support upload-time dedup and stored canonically on `media_items`.
+**Image:** convert HEIC in the browser if necessary, call the vision model once for bilingual titles, OCR, description, concepts, and keywords, then store searchable image chunks and embeddings. The Spanish title is the primary library title; the English title remains searchable and visible as secondary metadata.
 
-**Video:** extract audio, call `whisper-1` with automatic language detection, store the full transcript, create rolling timestamped chunks, embed them, and generate a poster. The baseline chunker uses approximately three sentences with one sentence of overlap and keeps tight first/last segment timestamps.
+**PDF:** download from private Storage, extract text, store the full transcript and overlapping chunks, then backfill embeddings. If `OPENAI_API_KEY` is absent, lexical search can continue with chunks whose embedding is `null`. If the embedding provider rejects a request because of quota, billing, permission, or authentication, the worker deletes the transcript and all chunks for that media item, clears derived image metadata, marks the item `failed`, and leaves the original file available for retry.
+
+**Video:** video processing remains a future phase. The planned lane extracts audio, calls `whisper-1`, stores timestamped chunks, embeds them, and generates a poster.
 
 **Note:** create or replace sentence-based rolling chunks with `char_start` and `char_end`; edits delete the old chunks and enqueue a fresh note job.
 
-**Failure:** after retry exhaustion, set `media_items.status=failed` and store a safe, user-facing error reason. A retry action re-enqueues the same idempotent job.
+**Failure:** every worker error records a safe `processing_error_code`, responsible service, optional provider request ID, and user-facing message. Embedding/vision credit and configuration failures roll back derived data before setting `media_items.status=failed`. The worker sends a technical alert to `hello@hugmun.ai` through Resend when `RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured. Email failure is logged but never causes the worker to crash. The library offers `Reintentar` and, for failed items, `Borrar` with the same 30-day recycle-bin confirmation.
 
-**Completion:** only mark an item `ready` after all required derived data for its kind exists. Partial batch failures are independent and must not block sibling items.
+**Completion:** image processing marks an item `ready` only after vision-derived chunks are saved. PDF lexical chunks can make an item searchable without embeddings when the embedding key is absent; when embedding is attempted and fails, the item is failed and rolled back. Partial batch failures are independent and must not block sibling items.
 
 ## 7. Status, realtime, and deletion lifecycle
 
@@ -278,16 +290,17 @@ uploading → processing → ready
                  └────→ failed
 ```
 
-Store a non-sensitive `processing_error` or `processing_error_code` when an item reaches `failed`. The UI maps that code to friendly copy and a retry action; provider error text must not be exposed directly.
+Store a non-sensitive `processing_error_code`, `processing_error_service`, `processing_error_message`, and optional `processing_error_request_id` when an item reaches `failed`. The UI maps the code to friendly copy and a retry action; provider error text must not be exposed directly.
 
-Supabase Realtime publishes changes to the user's `media_items` rows. The library subscribes to status changes and falls back to polling `GET /api/media/:id` if the subscription is unavailable.
+The library currently polls `GET /api/media/:id/status` while an item is active, with estimated progress so a slow worker does not appear frozen. The worker also writes a heartbeat to `service_health`; `/api/health` reports when that heartbeat is stale.
 
 Deletion is soft and immediate:
 
-1. Deleting a session sets `deleted_at` on the session, its media, and its notes.
-2. Library, search, chat, transcript, and signed-URL queries exclude deleted roots.
-3. A daily purge job finds records older than 30 days, deletes their R2 originals/thumbnails/posters, and then hard-deletes derived chunks, transcripts, duplicate flags, and database rows.
-4. Purge is idempotent and tolerant of already-missing R2 objects.
+1. The user deletes an opened image/PDF, or a failed item from its status actions; the UI always asks for confirmation.
+2. `DELETE /api/media/:id` sets `deleted_at` immediately. Library, search, MCP, transcript, and signed-URL queries exclude deleted roots.
+3. The worker finds deleted records older than 30 days, removes their Supabase Storage objects, derived chunks, transcripts, and database rows.
+4. `POST /api/media/:id` restores content deleted within 30 days. Exact re-uploads can also recover a matching item from the recycle bin.
+5. Purge is idempotent and tolerant of already-missing Storage objects.
 
 This gives the user an undo window while preventing orphaned files and vectors.
 
@@ -297,11 +310,12 @@ Search and chat share the same retrieval layer but have different jobs.
 
 ### Search
 
-1. Embed the query with `text-embedding-3-small`.
-2. Query `text_chunks` with cosine similarity, explicit `user_id`, and live-source filters.
-3. Retrieve a moderate candidate set, for example `k=30`.
-4. Group or rank hits for useful browsing.
-5. Return the source locator with every result.
+1. Always run PostgreSQL lexical search over processed chunks.
+2. When the embedding provider is configured and available, embed the query with `text-embedding-3-small` and add cosine similarity results.
+3. Query with explicit `user_id` and live-source filters.
+4. Retrieve a moderate candidate set, group/rank hits, and return the source locator with every result.
+
+The search word itself is embedded only for that search request; document and image embeddings are created once during processing and reused. If query embedding fails because of credits or provider availability, lexical results are returned with a notice. If document/image embedding fails during ingestion, the ingestion is rolled back and the item is marked failed instead of being silently indexed only partially.
 
 Locator rules:
 
@@ -336,34 +350,33 @@ List endpoints use `limit` and cursor pagination. Mutating upload operations are
 
 | Group | Endpoints |
 |---|---|
-| Upload | `POST /api/uploads/presign`, `POST /api/uploads/complete`, `POST /api/uploads/:id/confirm` |
-| Session/channel | `GET/POST /api/sessions`, `GET/PATCH/DELETE /api/sessions/:id`, channel CRUD |
-| Media | `GET /api/media/:id`, `DELETE /api/media/:id` |
+| Upload | `POST /api/uploads/prepare`, `POST /api/uploads/complete` |
+| Session | `GET/POST /api/sessions` |
+| Media | `GET /api/media`, `GET /api/media/:id`, `DELETE /api/media/:id`, `POST /api/media/:id` (restore), `GET /api/media/trash` |
+| Processing | `GET /api/media/:id/status`, `POST /api/media/:id/retry`, `GET /api/worker/process` |
 | Transcript | `GET /api/media/:id/transcript`, transcript download as PDF or text |
 | Notes | `POST/PATCH/DELETE /api/notes` and `/api/notes/:id` |
-| Retrieval | `GET /api/search?q=`, `POST /api/chat` |
-| Duplicates | `GET /api/duplicates`, `POST /api/duplicates/:id/resolve` |
+| Retrieval | `GET /api/search?q=`, read-only MCP tools through `/api/mcp` and `/mcp` |
+| Operations | `GET /api/health`, `GET /api/diagnostics` |
 
-The session initialization operation described in §5 should be implemented as `POST /api/sessions` or an equivalent batch-specific endpoint so a batch has a stable session before its files are uploaded.
+The current upload implementation creates or reuses the session inside `/api/uploads/prepare`, so the browser does not need a separate session-initialization step.
 
 ## 10. Frontend structure
 
-The project is empty today. A practical Next.js structure is:
+The implemented Next.js structure is:
 
 ```text
 app/
   (auth)/login/
   (app)/library/
-  (app)/sessions/[id]/
   (app)/search/
-  (app)/chat/
+  (app)/trash/
   api/
 components/
   upload/
   library/
   media/
   search/
-  chat/
 lib/
   auth/
   db/
@@ -371,25 +384,27 @@ lib/
   embeddings/
   processing/
   validation/
-inngest/
-  functions/
 supabase/migrations/
-tests/
+scripts/process-media.mjs
+test/
 ```
 
-Keep provider-specific code behind small adapters (`r2`, `transcription`, `vision`, `embeddings`, `chat`) so an overridable provider can change without rewriting domain flows.
+The library uses cursor pagination and virtualized page mounting so large libraries do not mount every card at once. Images open in an iPad-friendly full-screen viewer; PDFs open one at a time in an inline transcript reader. Delete controls are intentionally absent from cards and appear only in the opened viewer/reader or failed-item status actions.
+
+Keep provider-specific code behind small adapters (`storage`, `vision`, `embeddings`, `chat`) so an overridable provider can change without rewriting domain flows.
 
 ## 11. Deployment and environment
 
 Provision:
 
 - Supabase project with Auth, Postgres, pgvector, and Realtime;
-- private Cloudflare R2 bucket and S3-compatible credentials;
+- private Supabase Storage `media` bucket and storage policies;
 - Vercel project for Next.js;
-- Inngest app and signing key;
-- OpenAI credentials for Whisper, embeddings, and the selected vision/chat models.
+- OpenAI credentials for embeddings and the selected vision model;
+- an always-on worker container or Vercel Cron for `GET /api/worker/process`;
+- Resend credentials for operational alerts to `hello@hugmun.ai`.
 
-Server-only environment variables include `SUPABASE_SERVICE_ROLE_KEY`, R2 secrets, Inngest signing credentials, and model API keys. The browser may receive only the public Supabase URL/key and short-lived signed URLs.
+Server-only environment variables include `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `WORKER_SECRET`, `RESEND_API_KEY`, and `RESEND_FROM_EMAIL`. The browser may receive only the public Supabase URL/key and short-lived signed URLs. R2/Inngest are future migration options, not prerequisites for the current MVP.
 
 ## 12. Build order
 
@@ -399,14 +414,14 @@ Build the thin end-to-end thread first, then widen it:
 |---|---|---|
 | 0 | Provision services, migrations, pgvector, RLS, signup trigger | Migrations pass; another user cannot see seeded rows |
 | 1 | Email/password auth and profile sync | User can create an account, sign in, and access only their empty library |
-| 2 | One-image walking-skeleton upload | Image reaches private R2 and row moves `uploading → processing` |
-| 3 | Image processing | Vision chunks, embedding, CLIP fingerprint, thumbnail, and live `ready` status exist |
-| 4 | Signed media display and library | User can browse/open own image and not another user's image |
+| 2 | One-image walking-skeleton upload | Image reaches private Supabase Storage and row moves `uploading → processing` |
+| 3 | Image processing | Vision titles, searchable chunks, embeddings, and live `ready` status exist |
+| 4 | Signed media display and library | User can browse/open own image, with iPad viewer and virtualized library pages |
 | 5 | Video processing | Transcript, download, poster, playback, and timestamp seek work |
 | 6 | Search and chat | Spanish search works; hits land precisely; chat streams citations |
 | 7 | Deduplication | Exact/near duplicate warnings work; video flags appear later in library |
 | 8 | Notes and management | Note edits are searchable; channel assignment, unsorted view, and soft delete work |
-| 9 | Hardening | Retry, validation, empty states, rate limits, and cost guardrails work |
+| 9 | Hardening | Retry, rollback on provider/credit failure, support alerts, recycle bin, validation, and cost guardrails work |
 
 Each phase should be demonstrable before starting the next. The full acceptance scenario is the 15-step script in the build spec; it is the final MVP gate.
 
