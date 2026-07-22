@@ -35,13 +35,16 @@ function errorLabel(errorCode: string | null) {
   if (errorCode === "upload_incomplete") {
     return "La carga no terminó. Puedes borrarlo y volver a cargarlo.";
   }
-  if (errorCode === "image_vision_permission_denied") {
-    return "La clave de IA no tiene permiso para analizar imágenes."
+  if (errorCode === "embedding_quota_exhausted" || errorCode === "image_vision_quota_exhausted") {
+    return "No pudimos añadir este contenido porque el crédito de IA no está disponible. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+  }
+  if (errorCode === "embedding_permission_denied" || errorCode === "embedding_configuration_error" || errorCode === "image_vision_permission_denied") {
+    return "No pudimos añadir este contenido porque la configuración de IA necesita atención. Escríbenos a hello@hugmun.ai para que lo revisemos.";
   }
   if (errorCode === "image_format_unsupported") {
-    return "Convierte esta imagen a JPG o PNG para analizarla."
+    return "Convierte esta imagen a JPG o PNG para analizarla.";
   }
-  return "No se pudo terminar este archivo."
+  return "Estamos teniendo problemas para añadir más información. Escríbenos a hello@hugmun.ai para que lo revisemos.";
 }
 
 export function MediaProcessingStatus({

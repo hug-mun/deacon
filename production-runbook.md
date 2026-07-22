@@ -30,6 +30,8 @@ SUPABASE_SERVICE_ROLE_KEY=<supabase-service-role-key>
 OPENAI_API_KEY=<restricted-key-with-model-request>
 OPENAI_VISION_MODEL=gpt-5.6-luna
 OPENAI_VISION_DETAIL=low
+RESEND_API_KEY=<Resend API key for support alerts>
+RESEND_FROM_EMAIL=Deacon <alerts@hugmun.ai>
 NEXT_PUBLIC_BASE_PATH=/deacon
 APP_PUBLIC_URL=https://www.hugmun.ai/deacon
 MCP_PUBLIC_URL=https://www.hugmun.ai/deacon/mcp
@@ -51,6 +53,8 @@ NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<supabase-service-role-key>
 OPENAI_API_KEY=<same-openai-key-as-web>
 OPENAI_VISION_MODEL=gpt-5.6-luna
+RESEND_API_KEY=<Resend API key for support alerts>
+RESEND_FROM_EMAIL=Deacon <alerts@hugmun.ai>
 WORKER_INSTANCE_ID=deacon-worker-production-1
 ```
 

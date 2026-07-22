@@ -17,6 +17,7 @@ const WORKER_HEARTBEAT_MS = 15_000;
 const WORKER_INSTANCE_ID = process.env.WORKER_INSTANCE_ID || `${hostname()}-${process.pid}`;
 const MEDIA_RECOVERY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const STALE_UPLOAD_WINDOW_MS = 15 * 60 * 1000;
+const SUPPORT_EMAIL = "hello@hugmun.ai";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const openAiApiKey = process.env.OPENAI_API_KEY;
@@ -35,6 +36,122 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
   realtime: { transport: WebSocket },
 });
+
+function providerDetailsFromError(error) {
+  if (
+    error instanceof Error &&
+    ["VisionProviderError", "EmbeddingProviderError"].includes(error.name) &&
+    error.cause &&
+    typeof error.cause === "object"
+  ) {
+    return error.cause;
+  }
+  return null;
+}
+
+function processingFailureMessage(code) {
+  switch (code) {
+    case "embedding_quota_exhausted":
+      return "No pudimos añadir este contenido porque el crédito de IA no está disponible. No se guardó en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+    case "embedding_permission_denied":
+    case "embedding_configuration_error":
+      return "No pudimos añadir este contenido porque la configuración de IA necesita atención. No se guardó en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+    case "image_vision_quota_exhausted":
+      return "No pudimos analizar esta imagen porque el crédito de IA no está disponible. No se guardó en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+    case "image_vision_permission_denied":
+      return "No pudimos analizar esta imagen porque la configuración de IA necesita atención. No se guardó en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+    default:
+      return "Estamos teniendo problemas para añadir más información. No se guardó este contenido en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+  }
+}
+
+async function rollbackMediaIndex(media) {
+  const failures = [];
+  const { error: chunksError } = await supabase
+    .from("text_chunks")
+    .delete()
+    .eq("user_id", media.user_id)
+    .eq("source_id", media.id);
+  if (chunksError) failures.push(`chunks: ${chunksError.message}`);
+
+  const { error: transcriptError } = await supabase
+    .from("transcripts")
+    .delete()
+    .eq("user_id", media.user_id)
+    .eq("media_item_id", media.id);
+  if (transcriptError) failures.push(`transcript: ${transcriptError.message}`);
+
+  const { error: metadataError } = await supabase
+    .from("media_items")
+    .update({
+      image_title_en: null,
+      image_title_es: null,
+      image_description: null,
+      image_ocr_text: null,
+      image_keywords: [],
+    })
+    .eq("id", media.id)
+    .eq("user_id", media.user_id);
+  if (metadataError) failures.push(`metadata: ${metadataError.message}`);
+
+  if (failures.length > 0) {
+    console.error("[deacon][worker] rollback incomplete", { mediaId: media.id, failures });
+  }
+  return failures;
+}
+
+async function notifySupport(media, details) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM_EMAIL;
+  if (!apiKey || !from) {
+    console.warn("[deacon][worker] support email not configured", {
+      mediaId: media.id,
+      missing: [!apiKey ? "RESEND_API_KEY" : null, !from ? "RESEND_FROM_EMAIL" : null].filter(Boolean),
+    });
+    return;
+  }
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: [SUPPORT_EMAIL],
+        subject: `[Deacon] No se pudo añadir contenido (${details.code})`,
+        text: [
+          "Deacon detectó un error de procesamiento.",
+          "",
+          `Archivo: ${media.original_filename ?? "sin nombre"}`,
+          `Media ID: ${media.id}`,
+          `Usuario ID: ${media.user_id}`,
+          `Código: ${details.code}`,
+          `Servicio: ${details.service}`,
+          `Request ID: ${details.requestId ?? "no disponible"}`,
+          `Detalle técnico: ${details.technicalMessage}`,
+          "",
+          "La operación fue revertida y el archivo quedó disponible para reintentar.",
+        ].join("\n"),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      console.error("[deacon][worker] support email failed", {
+        mediaId: media.id,
+        status: response.status,
+        response: await response.text().catch(() => ""),
+      });
+    }
+  } catch (error) {
+    console.error("[deacon][worker] support email request failed", {
+      mediaId: media.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 async function writeHealth(status, values = {}) {
   const { error } = await supabase.from("service_health").upsert({
@@ -153,11 +270,29 @@ async function analyzeImage(file, mimeType) {
 
   if (!response.ok) {
     const providerError = body?.error ?? {};
+    const providerCode = providerError.code ?? providerError.type ?? null;
+    const providerMessage = String(providerError.message ?? "").toLowerCase();
+    const kind =
+      providerCode === "insufficient_quota" ||
+      providerMessage.includes("exceeded your current quota") ||
+      providerMessage.includes("run out of credits") ||
+      providerMessage.includes("billing details")
+        ? "quota_exhausted"
+        : response.status === 429
+          ? "rate_limited"
+          : response.status === 403 || providerCode === "missing_scope" || providerCode === "insufficient_permissions"
+            ? "permission_denied"
+            : response.status === 401 || providerCode === "invalid_api_key"
+              ? "authentication"
+              : response.status >= 500
+                ? "provider_unavailable"
+                : "invalid_request";
     const error = new Error(`Vision provider request failed: ${providerError.message ?? response.status}`);
     error.name = "VisionProviderError";
     error.cause = {
+      kind,
       status: response.status,
-      code: providerError.code ?? providerError.type ?? null,
+      code: providerCode,
       requestId: response.headers.get("x-request-id"),
     };
     throw error;
@@ -262,6 +397,8 @@ async function createEmbeddings(texts) {
           ? "rate_limited"
           : response.status === 401 || providerCode === "invalid_api_key"
             ? "authentication"
+            : response.status === 403 || providerCode === "missing_scope" || providerCode === "insufficient_permissions"
+              ? "permission_denied"
             : response.status >= 500
               ? "provider_unavailable"
               : "invalid_request";
@@ -522,33 +659,36 @@ async function processOne(media) {
       mediaId: media.id,
       error: error instanceof Error ? error.message : String(error),
     });
-    const providerDetails =
-      error instanceof Error &&
-      error.name === "VisionProviderError" &&
-      error.cause &&
-      typeof error.cause === "object"
-        ? error.cause
-        : null;
+    const providerDetails = providerDetailsFromError(error);
+    const isEmbeddingFailure = error instanceof Error && error.name === "EmbeddingProviderError";
+    const isVisionFailure = error instanceof Error && error.name === "VisionProviderError";
     const processingErrorCode =
       error instanceof Error && error.name === "UnsupportedImageFormatError"
         ? "image_format_unsupported"
-        : providerDetails?.status === 401 || providerDetails?.status === 403
-          ? "image_vision_permission_denied"
-          : "processing_failed";
+        : isEmbeddingFailure && providerDetails?.kind === "quota_exhausted"
+          ? "embedding_quota_exhausted"
+          : isEmbeddingFailure && providerDetails?.kind === "permission_denied"
+            ? "embedding_permission_denied"
+            : isEmbeddingFailure && providerDetails?.kind === "authentication"
+              ? "embedding_configuration_error"
+              : isVisionFailure && providerDetails?.kind === "quota_exhausted"
+                ? "image_vision_quota_exhausted"
+                : isVisionFailure && (providerDetails?.kind === "permission_denied" || providerDetails?.status === 401 || providerDetails?.status === 403)
+                  ? "image_vision_permission_denied"
+                  : "processing_failed";
     const processingErrorService =
-      error instanceof Error && error.name === "UnsupportedImageFormatError"
-        ? "image_processor"
-        : providerDetails
+      isEmbeddingFailure
+        ? "openai_embeddings"
+        : isVisionFailure
           ? "openai_vision"
-          : "media_worker";
+          : error instanceof Error && error.name === "UnsupportedImageFormatError"
+            ? "image_processor"
+            : "media_worker";
     const processingErrorMessage =
-      processingErrorCode === "image_vision_permission_denied"
-        ? providerDetails?.code === "missing_scope"
-          ? "La clave de OpenAI necesita el permiso model.request."
-          : "La clave de OpenAI no puede usar el modelo de visión."
-        : processingErrorCode === "image_format_unsupported"
-          ? "Este formato todavía no se puede convertir en el worker."
-          : "El worker no pudo terminar el procesamiento.";
+      processingErrorCode === "image_format_unsupported"
+        ? "Este formato todavía no se puede convertir en el worker."
+        : processingFailureMessage(processingErrorCode);
+    await rollbackMediaIndex(media);
     await writeHealth("degraded", {
       last_error_at: new Date().toISOString(),
       last_error_code: processingErrorCode,
@@ -573,13 +713,19 @@ async function processOne(media) {
         message: updateError.message,
       });
     }
+    await notifySupport(media, {
+      code: processingErrorCode,
+      service: processingErrorService,
+      requestId: providerDetails?.requestId ?? null,
+      technicalMessage: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
 async function poll() {
   const { data: mediaItems, error } = await supabase
     .from("media_items")
-    .select("id, user_id, session_id, kind, mime_type, storage_key, status, processing_attempts")
+    .select("id, user_id, session_id, kind, mime_type, storage_key, original_filename, status, processing_attempts")
     .eq("status", "processing")
     .is("deleted_at", null)
     .order("created_at", { ascending: true })
@@ -738,7 +884,7 @@ async function pollPendingEmbeddings() {
   for (const transcript of transcripts ?? []) {
     const { data: media, error: mediaError } = await supabase
       .from("media_items")
-      .select("id, user_id, session_id, status, deleted_at")
+      .select("id, user_id, session_id, original_filename, status, deleted_at")
       .eq("id", transcript.media_item_id)
       .eq("status", "ready")
       .is("deleted_at", null)
@@ -778,14 +924,12 @@ async function pollPendingEmbeddings() {
       lastEmbeddingAttemptAt = 0;
     } catch (embeddingError) {
       workerDegraded = true;
-      const providerDetails =
-        embeddingError instanceof Error &&
-        embeddingError.name === "EmbeddingProviderError" &&
-        embeddingError.cause &&
-        typeof embeddingError.cause === "object"
-          ? embeddingError.cause
-          : null;
-      if (providerDetails?.kind === "quota_exhausted" || providerDetails?.kind === "authentication") {
+      const providerDetails = providerDetailsFromError(embeddingError);
+      if (
+        providerDetails?.kind === "quota_exhausted" ||
+        providerDetails?.kind === "authentication" ||
+        providerDetails?.kind === "permission_denied"
+      ) {
         embeddingBlockedUntil = Date.now() + EMBEDDING_BLOCKED_RETRY_MS;
       }
       console.error("[deacon][worker] transcript embedding failed", {
@@ -793,34 +937,50 @@ async function pollPendingEmbeddings() {
         error: embeddingError instanceof Error ? embeddingError.message : String(embeddingError),
         provider: providerDetails,
       });
-      await updateProgress(
-        media.id,
-        {
-          processing_stage: "ready",
+      const processingErrorCode =
+        providerDetails?.kind === "quota_exhausted"
+          ? "embedding_quota_exhausted"
+          : providerDetails?.kind === "permission_denied"
+            ? "embedding_permission_denied"
+            : providerDetails?.kind === "authentication"
+              ? "embedding_configuration_error"
+              : "embedding_failed";
+      const processingErrorMessage = processingFailureMessage(processingErrorCode);
+      await rollbackMediaIndex(media);
+      const { error: failedStatusError } = await supabase
+        .from("media_items")
+        .update({
+          status: "failed",
+          processing_stage: "failed",
           processing_progress: 100,
-          processing_error_code:
-            providerDetails?.kind === "quota_exhausted" ? "embedding_quota_exhausted" : "embedding_failed",
+          processing_error_code: processingErrorCode,
           processing_error_service: "openai_embeddings",
-          processing_error_message:
-            providerDetails?.kind === "quota_exhausted"
-              ? "Se agotó el crédito de embeddings; la búsqueda por palabras sigue disponible."
-              : providerDetails?.kind === "permission_denied"
-                ? "La clave de OpenAI no tiene permiso para embeddings."
-                : "No se pudo completar la indexación semántica; la búsqueda por palabras sigue disponible.",
+          processing_error_message: processingErrorMessage,
           processing_error_request_id: providerDetails?.requestId ?? null,
-        },
-        "ready",
-      ).catch((statusError) => {
-        console.error("[deacon][worker] could not restore ready status after embedding failure", {
+          processing_completed_at: new Date().toISOString(),
+        })
+        .eq("id", media.id)
+        .eq("status", "ready");
+      if (failedStatusError) {
+        console.error("[deacon][worker] could not mark embedding failure", {
           mediaId: media.id,
-          error: statusError instanceof Error ? statusError.message : String(statusError),
+          error: failedStatusError.message,
         });
+      }
+      await notifySupport(media, {
+        code: processingErrorCode,
+        service: "openai_embeddings",
+        requestId: providerDetails?.requestId ?? null,
+        technicalMessage: embeddingError instanceof Error ? embeddingError.message : String(embeddingError),
       });
       await writeHealth("degraded", {
         last_error_at: new Date().toISOString(),
-        last_error_code: providerDetails?.kind === "quota_exhausted" ? "embedding_quota_exhausted" : "embedding_failed",
-        last_error_message: "La indexación semántica falló; la búsqueda léxica sigue disponible.",
+        last_error_code: processingErrorCode,
+        last_error_message: processingErrorMessage,
       });
+      if (["quota_exhausted", "authentication", "permission_denied"].includes(providerDetails?.kind)) {
+        break;
+      }
     }
   }
 }
