@@ -13,6 +13,7 @@ type ProcessingStatusProps = {
   initialErrorCode: string | null;
   initialErrorMessage?: string | null;
   initialErrorRequestId?: string | null;
+  onDelete?: () => void;
 };
 
 const ACTIVE_STATUSES = new Set(["uploading", "processing"]);
@@ -51,6 +52,7 @@ export function MediaProcessingStatus({
   initialErrorCode,
   initialErrorMessage = null,
   initialErrorRequestId = null,
+  onDelete,
 }: ProcessingStatusProps) {
   const router = useRouter();
   const [isRetrying, setIsRetrying] = useState(false);
@@ -149,9 +151,16 @@ export function MediaProcessingStatus({
           <small>{errorLabel(state.errorCode)}</small>
           {state.errorMessage ? <small>{state.errorMessage}</small> : null}
           {state.errorRequestId ? <small>Solicitud: {state.errorRequestId}</small> : null}
-          <button type="button" className="processing-retry" onClick={retry} disabled={isRetrying}>
-            {isRetrying ? "Reintentando…" : "Reintentar"}
-          </button>
+          <div className="processing-actions">
+            <button type="button" className="processing-retry" onClick={retry} disabled={isRetrying}>
+              {isRetrying ? "Reintentando…" : "Reintentar"}
+            </button>
+            {onDelete ? (
+              <button type="button" className="processing-delete" onClick={onDelete}>
+                Borrar
+              </button>
+            ) : null}
+          </div>
           {retryError ? <small>{retryError}</small> : null}
         </>
       ) : null}

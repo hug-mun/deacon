@@ -54,6 +54,7 @@ function MediaCard({ item, onDelete, deletingId }: MediaCardProps) {
       initialErrorCode={item.processing_error_code}
       initialErrorMessage={item.processing_error_message}
       initialErrorRequestId={item.processing_error_request_id}
+      onDelete={() => onDelete(item.id)}
     />
   );
 

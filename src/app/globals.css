@@ -1731,6 +1731,35 @@ h3 {
   color: var(--danger);
 }
 
+.processing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.55rem;
+}
+
+.processing-actions .processing-retry {
+  margin-top: 0;
+}
+
+.processing-delete {
+  min-height: 2.2rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: transparent;
+  color: var(--danger);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.processing-delete:hover,
+.processing-delete:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .empty-state {
   display: grid;
   justify-items: center;

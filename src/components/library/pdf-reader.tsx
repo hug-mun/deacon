@@ -121,6 +121,7 @@ export function PdfReader({
             initialErrorCode={processingErrorCode}
             initialErrorMessage={processingErrorMessage}
             initialErrorRequestId={processingErrorRequestId}
+            onDelete={onDelete}
           />
         </div>
       </summary>
