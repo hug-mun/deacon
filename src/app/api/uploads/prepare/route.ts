@@ -50,16 +50,23 @@ export async function POST(request: Request) {
     );
   }
 
-  let input: z.infer<typeof PrepareUploadSchema>;
-  try {
-    input = PrepareUploadSchema.parse(await request.json());
-  } catch {
+  const parsedInput = PrepareUploadSchema.safeParse(await request.json().catch(() => null));
+  if (!parsedInput.success) {
     console.warn("[deacon][uploads.prepare] validation failed");
+    const hasUnsupportedMimeType = parsedInput.error.issues.some((issue) => issue.path[0] === "mime_type");
     return NextResponse.json(
-      { error: { code: "invalid_request", message: "Los datos del archivo no son válidos." } },
+      {
+        error: {
+          code: hasUnsupportedMimeType ? "unsupported_file_type" : "invalid_request",
+          message: hasUnsupportedMimeType
+            ? "Solo puedes añadir archivos PDF, JPG, PNG o HEIC."
+            : "Los datos del archivo no son válidos.",
+        },
+      },
       { status: 400 },
     );
   }
+  const input: z.infer<typeof PrepareUploadSchema> = parsedInput.data;
 
   console.info("[deacon][uploads.prepare] validated input", {
     userId: user.id,

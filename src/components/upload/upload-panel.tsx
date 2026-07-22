@@ -15,6 +15,17 @@ type UploadStage =
   | "done"
   | "error";
 
+const ACCEPTED_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/heic",
+]);
+
+function isSupportedUpload(file: File) {
+  return ACCEPTED_MIME_TYPES.has(file.type);
+}
+
 function localDate() {
   const date = new Date();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -128,15 +139,24 @@ export function UploadPanel() {
   async function handleFiles(selectedFiles: File[]) {
     if (selectedFiles.length === 0) return;
 
+    const supportedFiles = selectedFiles.filter(isSupportedUpload);
+    const unsupportedCount = selectedFiles.length - supportedFiles.length;
+    if (supportedFiles.length === 0) {
+      setFileCount(selectedFiles.length);
+      setStage("error");
+      setMessage("Solo puedes añadir archivos PDF, JPG, PNG o HEIC.");
+      return;
+    }
+
     setMessage(null);
-    setFileCount(selectedFiles.length);
+    setFileCount(supportedFiles.length);
     setStage("hashing");
     let added = 0;
     let duplicates = 0;
     let restored = 0;
     const failures: string[] = [];
 
-    for (const selectedFile of selectedFiles) {
+    for (const selectedFile of supportedFiles) {
       try {
         const result = await uploadOne(selectedFile);
         if (result === "added") added += 1;
@@ -148,10 +168,12 @@ export function UploadPanel() {
       }
     }
 
-    setStage(failures.length > 0 ? "error" : "done");
+    setStage(failures.length > 0 || unsupportedCount > 0 ? "error" : "done");
     setMessage(
-      failures.length > 0
-        ? "No se pudo añadir uno o más archivos."
+      failures.length > 0 || unsupportedCount > 0
+        ? unsupportedCount > 0 && failures.length === 0
+          ? `${unsupportedCount} archivo(s) no compatible(s). Solo puedes añadir PDF, JPG, PNG o HEIC.`
+          : "No se pudo añadir uno o más archivos. Solo puedes añadir PDF, JPG, PNG o HEIC."
         : restored > 0
           ? restored === 1
             ? "Contenido recuperado de la papelera."

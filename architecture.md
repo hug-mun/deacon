@@ -181,6 +181,8 @@ The production MVP currently accepts one PDF or image at a time through the brow
 
 The original file is retained when processing fails so the user can retry after the cause is fixed. Exact duplicates and items recovered from the recycle bin are handled before a new Storage upload is started.
 
+The current accepted MIME types are `application/pdf`, `image/jpeg`, `image/png`, and `image/heic`. The browser picker and dropzone provide the first guard, `/api/uploads/prepare` validates the type server-side, the private Storage bucket accepts only those types, and the database check constraint prevents new unsupported media rows. Video and audio remain future phases.
+
 ### Batch semantics
 
 The current UI lets the user select multiple files, processes them sequentially, and automatically creates or reuses one session for the batch using the local date. The session begins unsorted and can later be assigned to a channel.

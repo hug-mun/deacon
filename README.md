@@ -300,6 +300,8 @@ The current upload flow handles one PDF or image at a time:
 7. The server verifies the object and changes the row to `status=processing`.
 8. The library renders a signed preview URL or the full-width PDF transcript reader.
 
+Upload types are intentionally limited to `application/pdf`, `image/jpeg`, `image/png`, and `image/heic`. The file picker, drag-and-drop handler, upload API, Storage bucket, and database write constraint all enforce this boundary. Video, audio, and other file types are future work and are rejected before processing.
+
 Local development and the current production deployment use private Supabase Storage behind the storage boundary. Cloudflare R2 and presigned multipart uploads are a future migration option and should not change the core session/media API.
 
 Storage keys use this shape:
