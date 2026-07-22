@@ -1211,6 +1211,108 @@ h3 {
   margin-top: 0.25rem;
 }
 
+.media-card,
+.media-reader {
+  position: relative;
+}
+
+.media-delete-icon {
+  position: absolute;
+  z-index: 3;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: grid;
+  width: 3rem;
+  min-height: 3rem;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(28, 35, 51, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 253, 252, 0.96);
+  box-shadow: 0 0.35rem 1rem rgba(28, 35, 51, 0.16);
+  color: var(--danger);
+}
+
+.media-delete-icon svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.media-delete-icon:hover:not(:disabled),
+.media-delete-icon:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.media-delete-icon:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.delete-confirm-backdrop {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  background: rgba(13, 17, 27, 0.62);
+}
+
+.delete-confirm-dialog {
+  width: min(100%, 28rem);
+  padding: clamp(1.4rem, 5vw, 2rem);
+  border: 1px solid var(--line);
+  border-radius: 1.1rem;
+  background: var(--paper-strong);
+  box-shadow: 0 1.5rem 4rem rgba(13, 17, 27, 0.24);
+}
+
+.delete-confirm-dialog h2 {
+  margin: 0.45rem 0 0.6rem;
+  font-size: clamp(1.45rem, 4vw, 2rem);
+}
+
+.delete-confirm-dialog > p:not(.eyebrow) {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.delete-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 1.5rem;
+}
+
+.delete-cancel-button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+}
+
+.delete-cancel-button:hover,
+.delete-cancel-button:focus-visible {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.delete-confirm-button {
+  background: var(--danger);
+}
+
+.delete-confirm-button:hover:not(:disabled),
+.delete-confirm-button:focus-visible {
+  background: #963d4b;
+  color: white;
+}
+
 .media-delete-button {
   min-height: 2.25rem;
   padding: 0.45rem 0.7rem;

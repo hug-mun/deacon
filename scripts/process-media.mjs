@@ -16,6 +16,7 @@ const EMBEDDING_BLOCKED_RETRY_MS = 15 * 60_000;
 const WORKER_HEARTBEAT_MS = 15_000;
 const WORKER_INSTANCE_ID = process.env.WORKER_INSTANCE_ID || `${hostname()}-${process.pid}`;
 const MEDIA_RECOVERY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const STALE_UPLOAD_WINDOW_MS = 15 * 60 * 1000;
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const openAiApiKey = process.env.OPENAI_API_KEY;
@@ -599,11 +600,55 @@ async function poll() {
 }
 
 export async function runWorkerOnce() {
+  await markStaleUploads();
   const processedMediaId = await poll();
   await pollPendingEmbeddings();
   await purgeExpiredDeletedMedia();
   await heartbeat(true);
   return { processedMediaId };
+}
+
+async function markStaleUploads() {
+  const cutoff = new Date(Date.now() - STALE_UPLOAD_WINDOW_MS).toISOString();
+  const { data: staleUploads, error } = await supabase
+    .from("media_items")
+    .select("id")
+    .eq("status", "uploading")
+    .is("deleted_at", null)
+    .lt("created_at", cutoff)
+    .limit(100);
+
+  if (error) {
+    console.error("[deacon][worker] stale upload query failed", {
+      code: error.code,
+      message: error.message,
+    });
+    return;
+  }
+
+  for (const media of staleUploads ?? []) {
+    const { error: updateError } = await supabase
+      .from("media_items")
+      .update({
+        status: "failed",
+        processing_stage: "failed",
+        processing_error_code: "upload_incomplete",
+        processing_error_service: "upload",
+        processing_error_message: "La carga no terminó. El archivo puede borrarse o volver a cargarse.",
+        processing_completed_at: new Date().toISOString(),
+      })
+      .eq("id", media.id)
+      .eq("status", "uploading")
+      .is("deleted_at", null);
+    if (updateError) {
+      console.error("[deacon][worker] stale upload update failed", {
+        mediaId: media.id,
+        message: updateError.message,
+      });
+    } else {
+      console.warn("[deacon][worker] stale upload marked failed", { mediaId: media.id });
+    }
+  }
 }
 
 async function purgeExpiredDeletedMedia() {

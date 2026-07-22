@@ -4,6 +4,7 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const RECOVERY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const STALE_UPLOAD_WINDOW_MS = 15 * 60 * 1000;
 const MEDIA_MIME_TYPES = [
   "image/jpeg",
   "image/png",
@@ -96,7 +97,7 @@ export async function POST(request: Request) {
 
   const { data: existing } = await supabase
     .from("media_items")
-    .select("id, original_filename, thumbnail_key, status")
+    .select("id, original_filename, thumbnail_key, status, processing_error_code, created_at")
     .eq("user_id", user.id)
     .eq("file_hash", input.file_hash)
     .is("deleted_at", null)
@@ -104,11 +105,22 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (existing) {
-    console.info("[deacon][uploads.prepare] duplicate found", {
-      existingMediaId: existing.id,
-      userId: user.id,
-    });
-    return NextResponse.json({ duplicate: true, existing });
+    const staleUpload = existing.status === "uploading" && new Date(existing.created_at).getTime() < Date.now() - STALE_UPLOAD_WINDOW_MS;
+    const incompleteUpload = existing.status === "failed" && existing.processing_error_code === "upload_incomplete";
+    if (staleUpload || incompleteUpload) {
+      await supabase
+        .from("media_items")
+        .update({ deleted_at: new Date().toISOString() })
+        .eq("id", existing.id)
+        .eq("user_id", user.id)
+        .is("deleted_at", null);
+    } else {
+      console.info("[deacon][uploads.prepare] duplicate found", {
+        existingMediaId: existing.id,
+        userId: user.id,
+      });
+      return NextResponse.json({ duplicate: true, existing });
+    }
   }
 
   const recoveryCutoff = new Date(Date.now() - RECOVERY_WINDOW_MS).toISOString();

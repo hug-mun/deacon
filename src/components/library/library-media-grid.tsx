@@ -78,6 +78,17 @@ function MediaCard({ item, onDelete, deletingId }: MediaCardProps) {
 
   return (
     <article className="media-card" id={`media-${item.id}`}>
+      <button
+        type="button"
+        className="media-delete-icon"
+        onClick={() => onDelete(item.id)}
+        disabled={deletingId === item.id}
+        aria-label={`Borrar ${title}`}
+      >
+        <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+          <path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+        </svg>
+      </button>
       {item.signedUrl ? (
         <ImageViewer
           mediaId={item.id}
@@ -94,16 +105,6 @@ function MediaCard({ item, onDelete, deletingId }: MediaCardProps) {
         {item.image_title_en && item.image_title_es ? <small className="media-card-title-en">{item.image_title_en}</small> : null}
         {item.image_description ? <p>{item.image_description}</p> : null}
         {status}
-        <div className="media-card-actions">
-          <button
-            type="button"
-            className="media-delete-button"
-            onClick={() => onDelete(item.id)}
-            disabled={deletingId === item.id}
-          >
-            {deletingId === item.id ? "Borrando…" : "Eliminar"}
-          </button>
-        </div>
       </div>
     </article>
   );
@@ -163,7 +164,19 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
   const [pendingOpen, setPendingOpen] = useState<OpenRequest | null>(null);
   const [forcedPageIndex, setForcedPageIndex] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<MediaItem | null>(null);
+  const deleteConfirmRef = useRef<HTMLButtonElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!deleteCandidate) return;
+    deleteConfirmRef.current?.focus();
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setDeleteCandidate(null);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [deleteCandidate]);
 
   useEffect(() => {
     async function openRequestedItem(event: Event) {
@@ -214,9 +227,6 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
   }, [media, pendingOpen]);
 
   const deleteMedia = useCallback(async (mediaId: string) => {
-    const item = media.find((candidate) => candidate.id === mediaId);
-    if (!item || !window.confirm(`¿Borrar “${item.image_title_es ?? item.original_filename}”? Podrás recuperarlo durante 30 días.`)) return;
-
     setDeletingId(mediaId);
     setError(null);
     try {
@@ -229,7 +239,19 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
     } finally {
       setDeletingId(null);
     }
-  }, [media]);
+  }, []);
+
+  function requestDelete(mediaId: string) {
+    const item = media.find((candidate) => candidate.id === mediaId);
+    if (item) setDeleteCandidate(item);
+  }
+
+  function confirmDelete() {
+    if (!deleteCandidate) return;
+    const mediaId = deleteCandidate.id;
+    setDeleteCandidate(null);
+    void deleteMedia(mediaId);
+  }
 
   const loadMore = useCallback(async () => {
     if (isLoading || !hasMore) return;
@@ -273,7 +295,7 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
           pageIndex={pageIndex}
           items={media.slice(pageIndex * 24, pageIndex * 24 + 24)}
           forceActive={forcedPageIndex === pageIndex}
-          onDelete={(mediaId) => void deleteMedia(mediaId)}
+          onDelete={requestDelete}
           deletingId={deletingId}
         />
       ))}
@@ -284,6 +306,29 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
             {isLoading ? "Cargando…" : "Cargar más"}
           </button>
           {error ? <p role="alert">{error}</p> : null}
+        </div>
+      ) : null}
+      {deleteCandidate ? (
+        <div className="delete-confirm-backdrop" role="presentation" onClick={() => setDeleteCandidate(null)}>
+          <section
+            className="delete-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-confirm-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="eyebrow">Papelera</p>
+            <h2 id="delete-confirm-title">¿Borrar este contenido?</h2>
+            <p>Se quitará de tu biblioteca, pero podrás recuperarlo durante 30 días.</p>
+            <div className="delete-confirm-actions">
+              <button type="button" className="delete-cancel-button" onClick={() => setDeleteCandidate(null)}>
+                Cancelar
+              </button>
+              <button ref={deleteConfirmRef} type="button" className="delete-confirm-button" onClick={confirmDelete}>
+                Borrar
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
     </>

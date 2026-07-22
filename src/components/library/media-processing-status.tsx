@@ -31,6 +31,9 @@ function stageLabel(status: string, stage: string) {
 }
 
 function errorLabel(errorCode: string | null) {
+  if (errorCode === "upload_incomplete") {
+    return "La carga no terminó. Puedes borrarlo y volver a cargarlo.";
+  }
   if (errorCode === "image_vision_permission_denied") {
     return "La clave de IA no tiene permiso para analizar imágenes."
   }

@@ -110,6 +110,22 @@ export function PdfReader({
         <div className="document-placeholder">
           <strong>PDF</strong>
           <span>{isLoadingTranscript ? "Abriendo…" : status === "ready" ? "Toca para leer" : "Preparando texto"}</span>
+          {onDelete ? (
+            <button
+              type="button"
+              className="media-delete-icon"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onDelete();
+              }}
+              aria-label={`Borrar ${filename}`}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                <path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+              </svg>
+            </button>
+          ) : null}
         </div>
         <div className="media-card-body">
           <strong>{filename}</strong>
@@ -147,11 +163,6 @@ export function PdfReader({
             <a className="transcript-download" href={appPath(`/api/media/${mediaId}/transcript?download=1`)}>
               Descargar texto
             </a>
-          ) : null}
-          {onDelete ? (
-            <button type="button" className="media-delete-button" onClick={onDelete}>
-              Eliminar
-            </button>
           ) : null}
           <button type="button" className="transcript-close" onClick={closeReader}>
             Cerrar
