@@ -78,17 +78,6 @@ function MediaCard({ item, onDelete, deletingId }: MediaCardProps) {
 
   return (
     <article className="media-card" id={`media-${item.id}`}>
-      <button
-        type="button"
-        className="media-delete-icon"
-        onClick={() => onDelete(item.id)}
-        disabled={deletingId === item.id}
-        aria-label={`Borrar ${title}`}
-      >
-        <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-          <path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3" />
-        </svg>
-      </button>
       {item.signedUrl ? (
         <ImageViewer
           mediaId={item.id}
@@ -96,6 +85,8 @@ function MediaCard({ item, onDelete, deletingId }: MediaCardProps) {
           alt={title}
           title={title}
           englishTitle={item.image_title_en}
+          onDelete={() => onDelete(item.id)}
+          isDeleting={deletingId === item.id}
         />
       ) : (
         <div className="media-placeholder">Vista previa no disponible</div>

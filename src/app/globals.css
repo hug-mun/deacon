@@ -1211,31 +1211,28 @@ h3 {
   margin-top: 0.25rem;
 }
 
-.media-card,
-.media-reader {
-  position: relative;
+.image-viewer-toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.media-delete-icon {
-  position: absolute;
-  z-index: 3;
-  top: 0.75rem;
-  right: 0.75rem;
+.image-viewer-delete {
   display: grid;
-  width: 3rem;
-  min-height: 3rem;
+  width: 2.8rem;
+  min-height: 2.8rem;
   place-items: center;
   padding: 0;
-  border: 1px solid rgba(28, 35, 51, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.24);
   border-radius: 999px;
-  background: rgba(255, 253, 252, 0.96);
-  box-shadow: 0 0.35rem 1rem rgba(28, 35, 51, 0.16);
-  color: var(--danger);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffb8bf;
 }
 
-.media-delete-icon svg {
-  width: 1.35rem;
-  height: 1.35rem;
+.image-viewer-delete svg {
+  width: 1.25rem;
+  height: 1.25rem;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -1243,13 +1240,13 @@ h3 {
   stroke-width: 1.8;
 }
 
-.media-delete-icon:hover:not(:disabled),
-.media-delete-icon:focus-visible {
-  background: var(--danger-soft);
-  color: var(--danger);
+.image-viewer-delete:hover:not(:disabled),
+.image-viewer-delete:focus-visible {
+  background: rgba(255, 184, 191, 0.2);
+  color: white;
 }
 
-.media-delete-icon:disabled {
+.image-viewer-delete:disabled {
   cursor: wait;
   opacity: 0.65;
 }

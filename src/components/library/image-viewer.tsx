@@ -9,9 +9,11 @@ type ImageViewerProps = {
   alt: string;
   title: string;
   englishTitle?: string | null;
+  onDelete?: () => void;
+  isDeleting?: boolean;
 };
 
-export function ImageViewer({ mediaId, src, alt, title, englishTitle = null }: ImageViewerProps) {
+export function ImageViewer({ mediaId, src, alt, title, englishTitle = null, onDelete, isDeleting = false }: ImageViewerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [hasError, setHasError] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -94,15 +96,30 @@ export function ImageViewer({ mediaId, src, alt, title, englishTitle = null }: I
                 <strong id="image-viewer-title">{title}</strong>
                 {englishTitle ? <span>{englishTitle}</span> : null}
               </div>
-              <button
-                ref={closeButtonRef}
-                type="button"
-                className="image-viewer-close"
-                onClick={closeViewer}
-                aria-label="Cerrar imagen"
-              >
-                <span aria-hidden="true">×</span>
-              </button>
+              <div className="image-viewer-toolbar-actions">
+                {onDelete ? (
+                  <button
+                    type="button"
+                    className="image-viewer-delete"
+                    onClick={onDelete}
+                    disabled={isDeleting}
+                    aria-label="Borrar imagen"
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                      <path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+                    </svg>
+                  </button>
+                ) : null}
+                <button
+                  ref={closeButtonRef}
+                  type="button"
+                  className="image-viewer-close"
+                  onClick={closeViewer}
+                  aria-label="Cerrar imagen"
+                >
+                  <span aria-hidden="true">×</span>
+                </button>
+              </div>
             </div>
 
             <div className="image-viewer-stage">
