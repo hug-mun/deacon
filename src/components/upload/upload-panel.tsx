@@ -93,7 +93,7 @@ export function UploadPanel() {
       duplicate: prepared.duplicate,
       mediaId: prepared.media?.id ?? prepared.existing?.id,
     });
-    if (prepared.duplicate) return "duplicate" as const;
+    if (prepared.duplicate) return prepared.restored ? "restored" as const : "duplicate" as const;
 
     setStage("uploading");
     console.info("[deacon][upload] uploading to storage", {
@@ -133,6 +133,7 @@ export function UploadPanel() {
     setStage("hashing");
     let added = 0;
     let duplicates = 0;
+    let restored = 0;
     const failures: string[] = [];
 
     for (const selectedFile of selectedFiles) {
@@ -140,6 +141,7 @@ export function UploadPanel() {
         const result = await uploadOne(selectedFile);
         if (result === "added") added += 1;
         if (result === "duplicate") duplicates += 1;
+        if (result === "restored") restored += 1;
       } catch (error) {
         console.error("[deacon][upload] failed", { filename: selectedFile.name, error });
         failures.push(`${selectedFile.name}: ${error instanceof Error ? error.message : "No se pudo cargar."}`);
@@ -150,11 +152,15 @@ export function UploadPanel() {
     setMessage(
       failures.length > 0
         ? "No se pudo añadir uno o más archivos."
+        : restored > 0
+          ? restored === 1
+            ? "Contenido recuperado de la papelera."
+            : `${restored} contenidos recuperados de la papelera.`
         : duplicates > 0 && added === 0
           ? "Ese archivo ya está en tu biblioteca."
           : "Añadido.",
     );
-    if (added > 0) router.refresh();
+    if (added > 0 || restored > 0) router.refresh();
   }
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {

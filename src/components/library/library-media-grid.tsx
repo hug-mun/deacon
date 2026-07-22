@@ -38,7 +38,13 @@ type OpenRequest = {
   charStart: number | null;
 };
 
-function MediaCard({ item }: { item: MediaItem }) {
+type MediaCardProps = {
+  item: MediaItem;
+  onDelete: (mediaId: string) => void;
+  deletingId: string | null;
+};
+
+function MediaCard({ item, onDelete, deletingId }: MediaCardProps) {
   const status = (
     <MediaProcessingStatus
       mediaId={item.id}
@@ -63,6 +69,7 @@ function MediaCard({ item }: { item: MediaItem }) {
         processingErrorCode={item.processing_error_code}
         processingErrorMessage={item.processing_error_message}
         processingErrorRequestId={item.processing_error_request_id}
+        onDelete={() => onDelete(item.id)}
       />
     );
   }
@@ -87,8 +94,63 @@ function MediaCard({ item }: { item: MediaItem }) {
         {item.image_title_en && item.image_title_es ? <small className="media-card-title-en">{item.image_title_en}</small> : null}
         {item.image_description ? <p>{item.image_description}</p> : null}
         {status}
+        <div className="media-card-actions">
+          <button
+            type="button"
+            className="media-delete-button"
+            onClick={() => onDelete(item.id)}
+            disabled={deletingId === item.id}
+          >
+            {deletingId === item.id ? "Borrando…" : "Eliminar"}
+          </button>
+        </div>
       </div>
     </article>
+  );
+}
+
+type VirtualMediaPageProps = {
+  pageIndex: number;
+  items: MediaItem[];
+  forceActive: boolean;
+  onDelete: (mediaId: string) => void;
+  deletingId: string | null;
+};
+
+function VirtualMediaPage({ pageIndex, items, forceActive, onDelete, deletingId }: VirtualMediaPageProps) {
+  const pageRef = useRef<HTMLElement>(null);
+  const [isNearViewport, setIsNearViewport] = useState(pageIndex === 0);
+
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!page) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) setIsNearViewport(true);
+        else setIsNearViewport(false);
+      },
+      { rootMargin: "1200px 0px" },
+    );
+    observer.observe(page);
+    return () => observer.disconnect();
+  }, []);
+
+  const isRendered = isNearViewport || forceActive;
+  return (
+    <section
+      ref={pageRef}
+      className={`virtual-media-page${isRendered ? " is-rendered" : ""}`}
+      aria-label={`Contenido ${pageIndex + 1}`}
+    >
+      {isRendered ? (
+        <div className="media-grid">
+          {items.map((item) => (
+            <MediaCard key={item.id} item={item} onDelete={onDelete} deletingId={deletingId} />
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -99,18 +161,27 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingOpen, setPendingOpen] = useState<OpenRequest | null>(null);
+  const [forcedPageIndex, setForcedPageIndex] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function openRequestedItem(event: Event) {
       const detail = (event as CustomEvent<{ mediaId?: string; query?: string; charStart?: number | null }>).detail;
-      if (!detail.mediaId || media.some((item) => item.id === detail.mediaId)) return;
+      if (!detail.mediaId) return;
+      const existingIndex = media.findIndex((item) => item.id === detail.mediaId);
+      if (existingIndex >= 0) {
+        setForcedPageIndex(Math.floor(existingIndex / 24));
+        setPendingOpen({ mediaId: detail.mediaId, query: detail.query ?? "", charStart: detail.charStart ?? null });
+        return;
+      }
 
       try {
         const response = await fetch(appPath(`/api/media/${detail.mediaId}`), { cache: "no-store" });
         const body = await response.json();
         if (!response.ok || !body.media) return;
         setMedia((current) => [body.media, ...current.filter((item) => item.id !== body.media.id)]);
+        setForcedPageIndex(0);
         setPendingOpen({ mediaId: body.media.id, query: detail.query ?? "", charStart: detail.charStart ?? null });
       } catch {
         // The search result remains available if the item cannot be opened right now.
@@ -136,8 +207,29 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
         detail: { mediaId: pendingOpen.mediaId },
       }));
     }
-    window.setTimeout(() => setPendingOpen(null), 0);
+    window.setTimeout(() => {
+      setPendingOpen(null);
+      setForcedPageIndex(null);
+    }, 0);
   }, [media, pendingOpen]);
+
+  const deleteMedia = useCallback(async (mediaId: string) => {
+    const item = media.find((candidate) => candidate.id === mediaId);
+    if (!item || !window.confirm(`¿Borrar “${item.image_title_es ?? item.original_filename}”? Podrás recuperarlo durante 30 días.`)) return;
+
+    setDeletingId(mediaId);
+    setError(null);
+    try {
+      const response = await fetch(appPath(`/api/media/${mediaId}`), { method: "DELETE" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error?.message ?? "No se pudo borrar el contenido.");
+      setMedia((current) => current.filter((candidate) => candidate.id !== mediaId));
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "No se pudo borrar el contenido.");
+    } finally {
+      setDeletingId(null);
+    }
+  }, [media]);
 
   const loadMore = useCallback(async () => {
     if (isLoading || !hasMore) return;
@@ -175,9 +267,16 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
 
   return (
     <>
-      <div className="media-grid">
-        {media.map((item) => <MediaCard key={item.id} item={item} />)}
-      </div>
+      {Array.from({ length: Math.ceil(media.length / 24) }, (_, pageIndex) => (
+        <VirtualMediaPage
+          key={pageIndex}
+          pageIndex={pageIndex}
+          items={media.slice(pageIndex * 24, pageIndex * 24 + 24)}
+          forceActive={forcedPageIndex === pageIndex}
+          onDelete={(mediaId) => void deleteMedia(mediaId)}
+          deletingId={deletingId}
+        />
+      ))}
       {hasMore ? (
         <div className="media-load-more">
           <div ref={sentinelRef} className="media-load-sentinel" aria-hidden="true" />

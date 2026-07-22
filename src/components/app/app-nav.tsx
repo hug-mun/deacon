@@ -9,6 +9,7 @@ export function AppNav() {
         Deacon
       </Link>
       <div className="nav-actions">
+        <Link className="nav-link" href="/trash">Papelera</Link>
         <SignOutButton />
       </div>
     </nav>

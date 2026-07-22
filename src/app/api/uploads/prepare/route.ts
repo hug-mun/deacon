@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const RECOVERY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const MEDIA_MIME_TYPES = [
   "image/jpeg",
   "image/png",
@@ -110,6 +111,49 @@ export async function POST(request: Request) {
     return NextResponse.json({ duplicate: true, existing });
   }
 
+  const recoveryCutoff = new Date(Date.now() - RECOVERY_WINDOW_MS).toISOString();
+  const { data: recentlyDeleted } = await supabase
+    .from("media_items")
+    .select("id, original_filename, thumbnail_key, status, deleted_at")
+    .eq("user_id", user.id)
+    .eq("file_hash", input.file_hash)
+    .gte("deleted_at", recoveryCutoff)
+    .order("deleted_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (recentlyDeleted) {
+    const { data: restored, error: restoreError } = await supabase
+      .from("media_items")
+      .update({
+        deleted_at: null,
+        ...(sessionId ? { session_id: sessionId } : {}),
+      })
+      .eq("id", recentlyDeleted.id)
+      .eq("user_id", user.id)
+      .gte("deleted_at", recoveryCutoff)
+      .select("id, original_filename, thumbnail_key, status, deleted_at")
+      .maybeSingle();
+
+    if (restoreError || !restored) {
+      console.error("[deacon][uploads.prepare] deleted media restore failed", {
+        code: restoreError?.code,
+        message: restoreError?.message,
+        mediaId: recentlyDeleted.id,
+      });
+      return NextResponse.json(
+        { error: { code: "media_restore_failed", message: "No se pudo recuperar el archivo anterior." } },
+        { status: 500 },
+      );
+    }
+
+    console.info("[deacon][uploads.prepare] restored recently deleted media", {
+      mediaId: restored.id,
+      userId: user.id,
+    });
+    return NextResponse.json({ duplicate: true, restored: true, existing: restored });
+  }
+
   if (!sessionId) {
     const { data: session, error: sessionError } = await supabase
       .from("sessions")
@@ -170,6 +214,17 @@ export async function POST(request: Request) {
     .single();
 
   if (error) {
+    if (error.code === "23505") {
+      const { data: concurrentExisting } = await supabase
+        .from("media_items")
+        .select("id, original_filename, thumbnail_key, status")
+        .eq("user_id", user.id)
+        .eq("file_hash", input.file_hash)
+        .is("deleted_at", null)
+        .limit(1)
+        .maybeSingle();
+      if (concurrentExisting) return NextResponse.json({ duplicate: true, existing: concurrentExisting });
+    }
     console.error("[deacon][uploads.prepare] media insert failed", {
       code: error.code,
       message: error.message,

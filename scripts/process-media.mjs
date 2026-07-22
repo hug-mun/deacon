@@ -15,6 +15,7 @@ const EMBEDDING_RETRY_MS = 60_000;
 const EMBEDDING_BLOCKED_RETRY_MS = 15 * 60_000;
 const WORKER_HEARTBEAT_MS = 15_000;
 const WORKER_INSTANCE_ID = process.env.WORKER_INSTANCE_ID || `${hostname()}-${process.pid}`;
+const MEDIA_RECOVERY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const openAiApiKey = process.env.OPENAI_API_KEY;
@@ -600,8 +601,68 @@ async function poll() {
 export async function runWorkerOnce() {
   const processedMediaId = await poll();
   await pollPendingEmbeddings();
+  await purgeExpiredDeletedMedia();
   await heartbeat(true);
   return { processedMediaId };
+}
+
+async function purgeExpiredDeletedMedia() {
+  const cutoff = new Date(Date.now() - MEDIA_RECOVERY_WINDOW_MS).toISOString();
+  const { data: expiredMedia, error } = await supabase
+    .from("media_items")
+    .select("id, user_id, storage_key, playback_key, thumbnail_key")
+    .lt("deleted_at", cutoff)
+    .order("deleted_at", { ascending: true })
+    .limit(100);
+
+  if (error) {
+    console.error("[deacon][worker] expired media query failed", {
+      code: error.code,
+      message: error.message,
+    });
+    return;
+  }
+
+  for (const media of expiredMedia ?? []) {
+    const storageKeys = [media.storage_key, media.playback_key, media.thumbnail_key].filter(Boolean);
+    if (storageKeys.length > 0) {
+      const { error: storageError } = await supabase.storage.from("media").remove(storageKeys);
+      if (storageError) {
+        console.error("[deacon][worker] expired media storage cleanup failed", {
+          mediaId: media.id,
+          message: storageError.message,
+        });
+        continue;
+      }
+    }
+
+    const { error: chunksError } = await supabase
+      .from("text_chunks")
+      .delete()
+      .eq("user_id", media.user_id)
+      .eq("source_id", media.id);
+    if (chunksError) {
+      console.error("[deacon][worker] expired media chunk cleanup failed", {
+        mediaId: media.id,
+        message: chunksError.message,
+      });
+      continue;
+    }
+
+    const { error: mediaError } = await supabase
+      .from("media_items")
+      .delete()
+      .eq("id", media.id)
+      .eq("user_id", media.user_id);
+    if (mediaError) {
+      console.error("[deacon][worker] expired media row cleanup failed", {
+        mediaId: media.id,
+        message: mediaError.message,
+      });
+    } else {
+      console.info("[deacon][worker] expired media purged", { mediaId: media.id });
+    }
+  }
 }
 
 async function pollPendingEmbeddings() {

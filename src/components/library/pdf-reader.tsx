@@ -14,6 +14,7 @@ type PdfReaderProps = {
   processingErrorMessage?: string | null;
   processingErrorRequestId?: string | null;
   transcript?: string | null;
+  onDelete?: () => void;
 };
 
 function escapeRegExp(value: string) {
@@ -41,6 +42,7 @@ export function PdfReader({
   processingErrorMessage = null,
   processingErrorRequestId = null,
   transcript: initialTranscript = null,
+  onDelete,
 }: PdfReaderProps) {
   const readerRef = useRef<HTMLDetailsElement>(null);
   const transcriptContentRef = useRef<HTMLDivElement>(null);
@@ -145,6 +147,11 @@ export function PdfReader({
             <a className="transcript-download" href={appPath(`/api/media/${mediaId}/transcript?download=1`)}>
               Descargar texto
             </a>
+          ) : null}
+          {onDelete ? (
+            <button type="button" className="media-delete-button" onClick={onDelete}>
+              Eliminar
+            </button>
           ) : null}
           <button type="button" className="transcript-close" onClick={closeReader}>
             Cerrar
