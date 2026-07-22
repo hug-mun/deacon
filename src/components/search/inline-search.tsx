@@ -73,7 +73,12 @@ export function InlineSearch() {
     if (!result.media_item_id) return;
 
     const target = document.getElementById(`media-${result.media_item_id}`);
-    if (!target) return;
+    if (!target) {
+      window.dispatchEvent(new CustomEvent("deacon:load-media", {
+        detail: { mediaId: result.media_item_id, query, charStart: match.char_start },
+      }));
+      return;
+    }
 
     if (target.matches("details")) {
       window.dispatchEvent(new CustomEvent("deacon:open-media", {

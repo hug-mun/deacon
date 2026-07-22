@@ -1,13 +1,17 @@
 import { redirect } from "next/navigation";
 import { AppNav } from "@/components/app/app-nav";
-import { PdfReader } from "@/components/library/pdf-reader";
 import { InlineSearch } from "@/components/search/inline-search";
-import { MediaProcessingStatus } from "@/components/library/media-processing-status";
 import { UploadPanel } from "@/components/upload/upload-panel";
-import { ImageViewer } from "@/components/library/image-viewer";
+import { LibraryMediaGrid } from "@/components/library/library-media-grid";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
+
+const PAGE_SIZE = 24;
+
+function encodeCursor(item: { created_at: string; id: string }) {
+  return Buffer.from(JSON.stringify({ createdAt: item.created_at, id: item.id })).toString("base64url");
+}
 
 export default async function LibraryPage() {
   const supabase = await getSupabaseServerClient();
@@ -26,10 +30,14 @@ export default async function LibraryPage() {
     )
     .eq("user_id", user.id)
     .is("deleted_at", null)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .range(0, PAGE_SIZE);
 
+  const hasMore = (mediaItems ?? []).length > PAGE_SIZE;
+  const firstPageItems = (mediaItems ?? []).slice(0, PAGE_SIZE);
+  const initialCursor = firstPageItems.length > 0 ? encodeCursor(firstPageItems[firstPageItems.length - 1]) : null;
   const media = await Promise.all(
-    (mediaItems ?? []).map(async (item) => {
+    firstPageItems.map(async (item) => {
       const { data: signedUrl } = await supabase.storage
         .from("media")
         .createSignedUrl(item.storage_key, 300);
@@ -59,59 +67,7 @@ export default async function LibraryPage() {
             <p className="eyebrow">Contenido reciente</p>
             <h2 id="media-heading">Contenido reciente</h2>
           </div>
-          <div className="media-grid">
-            {media.map((item) => {
-              const status = (
-                <MediaProcessingStatus
-                  mediaId={item.id}
-                  initialStatus={item.status}
-                  initialStage={item.processing_stage}
-                  initialProgress={item.processing_progress}
-                  initialErrorCode={item.processing_error_code}
-                  initialErrorMessage={item.processing_error_message}
-                  initialErrorRequestId={item.processing_error_request_id}
-                />
-              );
-
-              if (item.kind === "document") {
-                return (
-                  <PdfReader
-                    key={item.id}
-                    mediaId={item.id}
-                    filename={item.original_filename}
-                    status={item.status}
-                    processingStage={item.processing_stage}
-                    processingProgress={item.processing_progress}
-                    processingErrorCode={item.processing_error_code}
-                    processingErrorMessage={item.processing_error_message}
-                    processingErrorRequestId={item.processing_error_request_id}
-                  />
-                );
-              }
-
-              return (
-                <article className="media-card" id={`media-${item.id}`} key={item.id}>
-                  {item.signedUrl ? (
-                    <ImageViewer
-                      mediaId={item.id}
-                      src={item.signedUrl}
-                      alt={item.image_title_es ?? item.original_filename}
-                      title={item.image_title_es ?? item.image_title_en ?? item.original_filename}
-                      englishTitle={item.image_title_en}
-                    />
-                  ) : (
-                    <div className="media-placeholder">Vista previa no disponible</div>
-                  )}
-                  <div className="media-card-body">
-                    <strong>{item.image_title_es ?? item.image_title_en ?? item.original_filename}</strong>
-                    {item.image_title_en && item.image_title_es ? <small className="media-card-title-en">{item.image_title_en}</small> : null}
-                    {item.image_description ? <p>{item.image_description}</p> : null}
-                    {status}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
+          <LibraryMediaGrid initialMedia={media} initialHasMore={hasMore} initialCursor={initialCursor} />
         </section>
       ) : null}
     </main>
