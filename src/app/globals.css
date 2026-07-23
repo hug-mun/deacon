@@ -1826,6 +1826,19 @@ h3 {
   padding: clamp(1.25rem, 4vw, 3rem);
 }
 
+.video-player {
+  width: 100%;
+  max-height: 70vh;
+  border-radius: 12px;
+  background: #000;
+}
+
+.video-seek-notice {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  color: var(--ink-soft, #666);
+}
+
 .transcript-reader-heading {
   max-width: 72ch;
   margin-bottom: 1.75rem;

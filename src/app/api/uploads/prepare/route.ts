@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_VIDEO_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 const RECOVERY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const STALE_UPLOAD_WINDOW_MS = 15 * 60 * 1000;
 const MEDIA_MIME_TYPES = [
@@ -10,28 +11,38 @@ const MEDIA_MIME_TYPES = [
   "image/png",
   "image/heic",
   "application/pdf",
+  "video/mp4",
+  "video/quicktime",
 ] as const;
+const VIDEO_MIME_TYPES = new Set(["video/mp4", "video/quicktime"]);
 
-const PrepareUploadSchema = z.object({
-  session_id: z.string().uuid().optional().nullable(),
-  session_date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional()
-    .nullable(),
-  filename: z.string().trim().min(1).max(255),
-  mime_type: z.enum(MEDIA_MIME_TYPES),
-  size_bytes: z.number().int().positive().max(MAX_FILE_SIZE),
-  file_hash: z.string().regex(/^[a-f0-9]{64}$/i),
-});
+const PrepareUploadSchema = z
+  .object({
+    session_id: z.string().uuid().optional().nullable(),
+    session_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional()
+      .nullable(),
+    filename: z.string().trim().min(1).max(255),
+    mime_type: z.enum(MEDIA_MIME_TYPES),
+    size_bytes: z.number().int().positive().max(MAX_VIDEO_FILE_SIZE),
+    file_hash: z.string().regex(/^[a-f0-9]{64}$/i),
+  })
+  .refine(
+    (value) => VIDEO_MIME_TYPES.has(value.mime_type) || value.size_bytes <= MAX_FILE_SIZE,
+    { path: ["size_bytes"], message: "El archivo excede el tamaño permitido." },
+  );
 
 function getExtension(filename: string, mimeType: string) {
   const extension = filename.split(".").pop()?.toLowerCase();
-  if (extension && ["jpg", "jpeg", "png", "heic", "pdf"].includes(extension)) {
+  if (extension && ["jpg", "jpeg", "png", "heic", "pdf", "mp4", "mov"].includes(extension)) {
     return extension === "jpeg" ? "jpg" : extension;
   }
 
   if (mimeType === "application/pdf") return "pdf";
+  if (mimeType === "video/mp4") return "mp4";
+  if (mimeType === "video/quicktime") return "mov";
   return mimeType === "image/png" ? "png" : mimeType === "image/heic" ? "heic" : "jpg";
 }
 
@@ -59,7 +70,7 @@ export async function POST(request: Request) {
         error: {
           code: hasUnsupportedMimeType ? "unsupported_file_type" : "invalid_request",
           message: hasUnsupportedMimeType
-            ? "Solo puedes añadir archivos PDF, JPG, PNG o HEIC."
+            ? "Solo puedes añadir archivos PDF, JPG, PNG, HEIC, MP4 o MOV."
             : "Los datos del archivo no son válidos.",
         },
       },
@@ -203,7 +214,11 @@ export async function POST(request: Request) {
 
   const mediaId = crypto.randomUUID();
   const extension = getExtension(input.filename, input.mime_type);
-  const kind = input.mime_type === "application/pdf" ? "document" : "image";
+  const kind = input.mime_type === "application/pdf"
+    ? "document"
+    : VIDEO_MIME_TYPES.has(input.mime_type)
+      ? "video"
+      : "image";
   const storageKey = `users/${user.id}/${mediaId}/original.${extension}`;
 
   console.info("[deacon][uploads.prepare] inserting media row", {

@@ -220,7 +220,7 @@ export async function GET(request: Request) {
       lexicalSimilarity?: number;
       vectorSimilarity?: number;
       match_count: number;
-      matches: Array<{ id: string; char_start: number | null; char_end: number | null; score: number; snippet: string }>;
+      matches: Array<{ id: string; char_start: number | null; char_end: number | null; start_ms: number | null; end_ms: number | null; score: number; snippet: string }>;
     }>();
     for (const row of rankedRows) {
       const key = row.media_item_id ?? `${row.source_type}:${row.source_id}`;
@@ -232,6 +232,8 @@ export async function GET(request: Request) {
             id: row.id,
             char_start: row.char_start,
             char_end: row.char_end,
+            start_ms: row.start_ms,
+            end_ms: row.end_ms,
             score: row.similarity,
             snippet: makeSnippet(row.content, input.data.q),
           });
@@ -247,6 +249,8 @@ export async function GET(request: Request) {
           id: row.id,
           char_start: row.char_start,
           char_end: row.char_end,
+          start_ms: row.start_ms,
+          end_ms: row.end_ms,
           score: row.similarity,
           snippet: makeSnippet(row.content, input.data.q),
         }],

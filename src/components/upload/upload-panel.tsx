@@ -4,6 +4,7 @@ import { ChangeEvent, DragEvent, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { sha256File } from "@/lib/upload/hash";
+import { uploadResumable } from "@/lib/upload/resumable";
 import { appPath } from "@/lib/app-path";
 
 type UploadStage =
@@ -20,7 +21,13 @@ const ACCEPTED_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
   "image/heic",
+  "video/mp4",
+  "video/quicktime",
 ]);
+
+// Above this size the browser uploads through the resumable (TUS) protocol so a
+// dropped connection resumes instead of restarting the whole file.
+const RESUMABLE_UPLOAD_THRESHOLD = 6 * 1024 * 1024;
 
 function isSupportedUpload(file: File) {
   return ACCEPTED_MIME_TYPES.has(file.type);
@@ -110,16 +117,26 @@ export function UploadPanel() {
     console.info("[deacon][upload] uploading to storage", {
       mediaId: prepared.media.id,
       storageKey: prepared.media.storage_key,
+      resumable: file.size > RESUMABLE_UPLOAD_THRESHOLD,
     });
-    const supabase = getSupabaseBrowserClient();
-    const { error: storageError } = await supabase.storage
-      .from("media")
-      .upload(prepared.media.storage_key, file, {
-        contentType: file.type,
-        upsert: false,
-      });
+    if (file.size > RESUMABLE_UPLOAD_THRESHOLD) {
+      try {
+        await uploadResumable(prepared.media.storage_key, file);
+      } catch (error) {
+        console.error("[deacon][upload] resumable upload failed", { error });
+        throw new Error("No se pudo guardar el archivo en el almacenamiento. Revisa tu conexión e inténtalo de nuevo; la carga continuará donde se quedó.");
+      }
+    } else {
+      const supabase = getSupabaseBrowserClient();
+      const { error: storageError } = await supabase.storage
+        .from("media")
+        .upload(prepared.media.storage_key, file, {
+          contentType: file.type,
+          upsert: false,
+        });
 
-    if (storageError) throw new Error("No se pudo guardar el archivo en el almacenamiento.");
+      if (storageError) throw new Error("No se pudo guardar el archivo en el almacenamiento.");
+    }
 
     setStage("finalizing");
     console.info("[deacon][upload] storage upload complete; finalizing", {
@@ -144,7 +161,7 @@ export function UploadPanel() {
     if (supportedFiles.length === 0) {
       setFileCount(selectedFiles.length);
       setStage("error");
-      setMessage("Solo puedes añadir archivos PDF, JPG, PNG o HEIC.");
+      setMessage("Solo puedes añadir archivos PDF, JPG, PNG, HEIC, MP4 o MOV.");
       return;
     }
 
@@ -172,8 +189,8 @@ export function UploadPanel() {
     setMessage(
       failures.length > 0 || unsupportedCount > 0
         ? unsupportedCount > 0 && failures.length === 0
-          ? `${unsupportedCount} archivo(s) no compatible(s). Solo puedes añadir PDF, JPG, PNG o HEIC.`
-          : "No se pudo añadir uno o más archivos. Solo puedes añadir PDF, JPG, PNG o HEIC."
+          ? `${unsupportedCount} archivo(s) no compatible(s). Solo puedes añadir PDF, JPG, PNG, HEIC, MP4 o MOV.`
+          : "No se pudo añadir uno o más archivos. Solo puedes añadir PDF, JPG, PNG, HEIC, MP4 o MOV."
         : restored > 0
           ? restored === 1
             ? "Contenido recuperado de la papelera."
@@ -263,14 +280,14 @@ export function UploadPanel() {
             </span>
             <strong>Añadir contenido</strong>
             <span>Arrastra archivos aquí o toca para elegirlos</span>
-            <small>PDF, JPG, PNG o HEIC</small>
+            <small>PDF, JPG, PNG, HEIC, MP4 o MOV</small>
           </label>
           <input
             id="library-file-upload"
             ref={inputRef}
             className="visually-hidden"
             type="file"
-            accept="application/pdf,image/jpeg,image/png,image/heic"
+            accept="application/pdf,image/jpeg,image/png,image/heic,video/mp4,video/quicktime"
             multiple
             onChange={handleFileChange}
           />

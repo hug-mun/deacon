@@ -17,10 +17,19 @@ type SearchResult = {
     id: string;
     char_start: number | null;
     char_end: number | null;
+    start_ms: number | null;
+    end_ms: number | null;
     score: number;
     snippet: string;
   }>;
 };
+
+function formatTimestamp(ms: number) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 const sourceLabels: Record<string, string> = {
   transcript: "Transcripción",
@@ -75,14 +84,14 @@ export function InlineSearch() {
     const target = document.getElementById(`media-${result.media_item_id}`);
     if (!target) {
       window.dispatchEvent(new CustomEvent("deacon:load-media", {
-        detail: { mediaId: result.media_item_id, query, charStart: match.char_start },
+        detail: { mediaId: result.media_item_id, query, charStart: match.char_start, startMs: match.start_ms },
       }));
       return;
     }
 
     if (target.matches("details")) {
       window.dispatchEvent(new CustomEvent("deacon:open-media", {
-        detail: { mediaId: result.media_item_id, query, charStart: match.char_start },
+        detail: { mediaId: result.media_item_id, query, charStart: match.char_start, startMs: match.start_ms },
       }));
       return;
     }
@@ -137,7 +146,7 @@ export function InlineSearch() {
                       openResult(result, match);
                     }}
                   >
-                    Abrir aquí →
+                    {typeof match.start_ms === "number" ? `Ir al minuto ${formatTimestamp(match.start_ms)} →` : "Abrir aquí →"}
                   </a>
                 ) : null}
               </article>

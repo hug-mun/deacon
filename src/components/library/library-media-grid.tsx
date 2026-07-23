@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ImageViewer } from "@/components/library/image-viewer";
 import { MediaProcessingStatus } from "@/components/library/media-processing-status";
 import { PdfReader } from "@/components/library/pdf-reader";
+import { VideoPlayer } from "@/components/library/video-player";
 import { appPath } from "@/lib/app-path";
 
 type MediaItem = {
@@ -36,6 +37,7 @@ type OpenRequest = {
   mediaId: string;
   query: string;
   charStart: number | null;
+  startMs: number | null;
 };
 
 type MediaCardProps = {
@@ -57,6 +59,23 @@ function MediaCard({ item, onDelete, deletingId }: MediaCardProps) {
       onDelete={() => onDelete(item.id)}
     />
   );
+
+  if (item.kind === "video") {
+    return (
+      <VideoPlayer
+        key={item.id}
+        mediaId={item.id}
+        filename={item.original_filename}
+        status={item.status}
+        processingStage={item.processing_stage}
+        processingProgress={item.processing_progress}
+        processingErrorCode={item.processing_error_code}
+        processingErrorMessage={item.processing_error_message}
+        processingErrorRequestId={item.processing_error_request_id}
+        onDelete={() => onDelete(item.id)}
+      />
+    );
+  }
 
   if (item.kind === "document") {
     return (
@@ -172,12 +191,12 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
 
   useEffect(() => {
     async function openRequestedItem(event: Event) {
-      const detail = (event as CustomEvent<{ mediaId?: string; query?: string; charStart?: number | null }>).detail;
+      const detail = (event as CustomEvent<{ mediaId?: string; query?: string; charStart?: number | null; startMs?: number | null }>).detail;
       if (!detail.mediaId) return;
       const existingIndex = media.findIndex((item) => item.id === detail.mediaId);
       if (existingIndex >= 0) {
         setForcedPageIndex(Math.floor(existingIndex / 24));
-        setPendingOpen({ mediaId: detail.mediaId, query: detail.query ?? "", charStart: detail.charStart ?? null });
+        setPendingOpen({ mediaId: detail.mediaId, query: detail.query ?? "", charStart: detail.charStart ?? null, startMs: detail.startMs ?? null });
         return;
       }
 
@@ -187,7 +206,7 @@ export function LibraryMediaGrid({ initialMedia, initialHasMore, initialCursor }
         if (!response.ok || !body.media) return;
         setMedia((current) => [body.media, ...current.filter((item) => item.id !== body.media.id)]);
         setForcedPageIndex(0);
-        setPendingOpen({ mediaId: body.media.id, query: detail.query ?? "", charStart: detail.charStart ?? null });
+        setPendingOpen({ mediaId: body.media.id, query: detail.query ?? "", charStart: detail.charStart ?? null, startMs: detail.startMs ?? null });
       } catch {
         // The search result remains available if the item cannot be opened right now.
       }

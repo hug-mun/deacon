@@ -59,9 +59,12 @@ export async function GET(
     );
   }
 
+  // Videos stream progressively with range requests, so their signed URL must
+  // outlive a full viewing session instead of the 5-minute image window.
+  const signedUrlTtl = item.kind === "video" ? 4 * 60 * 60 : 300;
   const { data: signedUrl } = await supabase.storage
     .from("media")
-    .createSignedUrl(item.storage_key, 300);
+    .createSignedUrl(item.storage_key, signedUrlTtl);
 
   return NextResponse.json(
     { media: { ...item, signedUrl: signedUrl?.signedUrl ?? null } },

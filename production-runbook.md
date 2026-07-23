@@ -46,7 +46,16 @@ Do not expose `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, or `MCP_OAUTH_SIGNI
 
 ## 3. Media worker
 
-Deploy [`Dockerfile.worker`](Dockerfile.worker) as an always-on worker. It includes `pdftotext` for transcript/PDF processing.
+Deploy [`Dockerfile.worker`](Dockerfile.worker) as an always-on worker. It includes `pdftotext` for transcript/PDF processing and `ffmpeg` for video audio extraction; video items are only processed by workers that have ffmpeg (the Vercel lane skips them).
+
+Recommended host: **Railway** (deploys from GitHub, no CLI required, needs no inbound networking):
+
+1. railway.com → New Project → **Deploy from GitHub repo** → select `hug-mun/deacon`.
+2. Railway reads [`railway.json`](railway.json) and builds `Dockerfile.worker` automatically.
+3. In the service **Variables** tab, add the worker variables below, then deploy.
+4. Confirm the deploy logs show `[deacon][worker] started` and `/api/health` reports `media_worker` as `ok`.
+
+The worker only polls Supabase outbound, so do not add a public domain to the service.
 
 Set the worker variables:
 

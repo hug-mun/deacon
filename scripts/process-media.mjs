@@ -1,4 +1,10 @@
-import { hostname } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
+import { createWriteStream } from "node:fs";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { createClient } from "@supabase/supabase-js";
 // Import the parser implementation directly. The package root runs its own
 // fixture test when bundled as a serverless dependency.
@@ -8,6 +14,12 @@ import { imageChunks, normalizeImageAnalysis } from "./image-analysis.mjs";
 
 const POLL_MS = 1500;
 const EMBEDDING_MODEL = "text-embedding-3-small";
+const TRANSCRIPTION_MODEL = "whisper-1";
+// whisper-1 rejects uploads over 25 MB; 32 kbps mono covers ~100 min under that cap.
+const TRANSCRIPTION_UPLOAD_LIMIT_BYTES = 24 * 1024 * 1024;
+// Video transcript chunks stay small (~60-90s of speech) so search results can
+// seek close to the spoken moment.
+const VIDEO_CHUNK_TARGET_CHARS = 900;
 const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-5.6-luna";
 const VISION_DETAIL = process.env.OPENAI_VISION_DETAIL || "low";
 const EMBEDDING_BATCH_SIZE = 64;
@@ -37,6 +49,16 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
   realtime: { transport: WebSocket },
 });
 
+// Video processing needs ffmpeg (Docker worker / local dev). The Vercel lane has
+// no ffmpeg, so instances without it leave video items for a capable worker.
+const ffmpegAvailable = (() => {
+  try {
+    return spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
+  } catch {
+    return false;
+  }
+})();
+
 function providerDetailsFromError(error) {
   if (
     error instanceof Error &&
@@ -60,6 +82,13 @@ function processingFailureMessage(code) {
       return "No pudimos analizar esta imagen porque el crédito de IA no está disponible. No se guardó en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
     case "image_vision_permission_denied":
       return "No pudimos analizar esta imagen porque la configuración de IA necesita atención. No se guardó en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+    case "transcription_quota_exhausted":
+      return "No pudimos transcribir este video porque el crédito de IA no está disponible. No se guardó en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+    case "transcription_permission_denied":
+    case "transcription_configuration_error":
+      return "No pudimos transcribir este video porque la configuración de IA necesita atención. No se guardó en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
+    case "video_too_long":
+      return "Este video es demasiado largo para transcribirlo (máximo ~100 minutos). Divídelo en partes más cortas e inténtalo de nuevo.";
     default:
       return "Estamos teniendo problemas para añadir más información. No se guardó este contenido en la búsqueda. Escríbenos a hello@hugmun.ai para que lo revisemos.";
   }
@@ -217,6 +246,149 @@ function chunkTranscript(text) {
   }
 
   return chunks;
+}
+
+// Group whisper segments into ~VIDEO_CHUNK_TARGET_CHARS chunks aligned to speech
+// boundaries. Chunks keep char offsets into the joined transcript text plus the
+// start/end timecodes that power seek-to-moment search results.
+function chunkTranscriptSegments(segments) {
+  const chunks = [];
+  let group = [];
+  let groupLength = 0;
+
+  const flush = () => {
+    if (group.length === 0) return;
+    chunks.push({
+      content: group.map((segment) => segment.text).join(" "),
+      charStart: group[0].charStart,
+      charEnd: group[group.length - 1].charEnd,
+      startMs: group[0].start_ms,
+      endMs: group[group.length - 1].end_ms,
+    });
+    // One-segment overlap keeps sentences that straddle a boundary searchable.
+    group = group.slice(-1);
+    groupLength = group.reduce((total, segment) => total + segment.text.length + 1, 0);
+  };
+
+  for (const segment of segments) {
+    group.push(segment);
+    groupLength += segment.text.length + 1;
+    if (groupLength >= VIDEO_CHUNK_TARGET_CHARS) flush();
+  }
+  if (group.length > (chunks.length > 0 ? 1 : 0)) flush();
+
+  return chunks;
+}
+
+// Normalize whisper verbose_json segments: trim text, compute char offsets over
+// the joined transcript so chunk offsets and full_text stay consistent.
+function normalizeWhisperSegments(rawSegments) {
+  const segments = [];
+  let cursor = 0;
+  for (const segment of rawSegments ?? []) {
+    const text = String(segment.text ?? "").trim();
+    if (!text) continue;
+    const charStart = cursor;
+    cursor += text.length + 1;
+    segments.push({
+      start_ms: Math.max(0, Math.round(Number(segment.start) * 1000)),
+      end_ms: Math.max(0, Math.round(Number(segment.end) * 1000)),
+      text,
+      charStart,
+      charEnd: charStart + text.length,
+    });
+  }
+  return segments;
+}
+
+function transcriptChunksFor(transcript) {
+  const segments = Array.isArray(transcript.segments) ? transcript.segments : null;
+  if (segments && segments.length > 0) {
+    let normalized = segments;
+    if (normalized.some((segment) => segment.charStart === undefined)) {
+      // Segments loaded from the database lack char offsets; recompute them.
+      normalized = normalizeWhisperSegments(
+        normalized.map((segment) => ({
+          start: (segment.start_ms ?? 0) / 1000,
+          end: (segment.end_ms ?? 0) / 1000,
+          text: segment.text,
+        })),
+      );
+    }
+    return chunkTranscriptSegments(normalized);
+  }
+  return chunkTranscript(transcript.full_text ?? "");
+}
+
+function runCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (data) => {
+      stdout += data;
+    });
+    child.stderr.on("data", (data) => {
+      stderr = `${stderr}${data}`.slice(-4000);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`${command} exited with code ${code}: ${stderr.slice(-500)}`));
+    });
+  });
+}
+
+async function transcribeAudio(audioPath, filename) {
+  if (!openAiApiKey) {
+    throw new Error("OPENAI_API_KEY is required to transcribe videos");
+  }
+
+  const audio = await readFile(audioPath);
+  const form = new FormData();
+  form.append("file", new Blob([audio], { type: "audio/mpeg" }), filename);
+  form.append("model", TRANSCRIPTION_MODEL);
+  form.append("response_format", "verbose_json");
+  form.append("timestamp_granularities[]", "segment");
+
+  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${openAiApiKey}` },
+    body: form,
+  });
+
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const providerError = body?.error ?? {};
+    const providerCode = providerError.code ?? providerError.type ?? null;
+    const providerMessage = String(providerError.message ?? "").toLowerCase();
+    const kind =
+      providerCode === "insufficient_quota" ||
+      providerMessage.includes("exceeded your current quota") ||
+      providerMessage.includes("run out of credits") ||
+      providerMessage.includes("billing details")
+        ? "quota_exhausted"
+        : response.status === 429 || providerCode === "rate_limit_exceeded"
+          ? "rate_limited"
+          : response.status === 401 || providerCode === "invalid_api_key"
+            ? "authentication"
+            : response.status === 403 || providerCode === "missing_scope" || providerCode === "insufficient_permissions"
+              ? "permission_denied"
+              : response.status >= 500
+                ? "provider_unavailable"
+                : "invalid_request";
+    const error = new Error(`Transcription provider request failed: ${kind}`);
+    error.name = "TranscriptionProviderError";
+    error.cause = {
+      kind,
+      status: response.status,
+      code: providerCode,
+      requestId: response.headers.get("x-request-id"),
+    };
+    throw error;
+  }
+
+  return body;
 }
 
 async function analyzeImage(file, mimeType) {
@@ -425,7 +597,7 @@ async function createEmbeddings(texts) {
 }
 
 async function ensureTranscriptChunks(media, transcript) {
-  const chunks = chunkTranscript(transcript.full_text ?? "");
+  const chunks = transcriptChunksFor(transcript);
   if (chunks.length === 0) {
     console.info("[deacon][worker] transcript has no text to index", { mediaId: media.id });
     return chunks;
@@ -450,6 +622,8 @@ async function ensureTranscriptChunks(media, transcript) {
     chunk_index: index,
     char_start: chunk.charStart,
     char_end: chunk.charEnd,
+    start_ms: chunk.startMs ?? null,
+    end_ms: chunk.endMs ?? null,
     content: chunk.content,
     embedding: null,
   }));
@@ -468,7 +642,7 @@ async function ensureTranscriptChunks(media, transcript) {
 }
 
 async function embedTranscript(media, transcript) {
-  const chunks = chunkTranscript(transcript.full_text ?? "");
+  const chunks = transcriptChunksFor(transcript);
   if (chunks.length === 0) {
     await updateProgress(
       media.id,
@@ -514,6 +688,8 @@ async function embedTranscript(media, transcript) {
     chunk_index: index,
     char_start: chunk.charStart,
     char_end: chunk.charEnd,
+    start_ms: chunk.startMs ?? null,
+    end_ms: chunk.endMs ?? null,
     content: chunk.content,
     embedding: `[${vectors[index].join(",")}]`,
   }));
@@ -624,6 +800,112 @@ async function processImage(media) {
   console.info("[deacon][worker] image ready", { mediaId: media.id, chunkCount });
 }
 
+async function processVideo(media) {
+  const workDir = await mkdtemp(join(tmpdir(), "deacon-video-"));
+  const videoPath = join(workDir, "original");
+  const audioPath = join(workDir, "audio.mp3");
+
+  try {
+    console.info("[deacon][worker] downloading video", { mediaId: media.id });
+    const { data: file, error: downloadError } = await supabase.storage
+      .from("media")
+      .download(media.storage_key);
+    if (downloadError || !file) {
+      throw new Error(downloadError?.message ?? "Storage returned no video");
+    }
+    // Stream to disk: videos can be hundreds of MB and must not be buffered in memory.
+    await pipeline(Readable.fromWeb(file.stream()), createWriteStream(videoPath));
+
+    await updateProgress(media.id, { processing_stage: "extracting", processing_progress: 25 });
+    console.info("[deacon][worker] extracting audio", { mediaId: media.id });
+    await runCommand("ffmpeg", [
+      "-y", "-v", "error",
+      "-i", videoPath,
+      "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k",
+      audioPath,
+    ]);
+
+    let durationMs = null;
+    try {
+      const probed = await runCommand("ffprobe", [
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        videoPath,
+      ]);
+      const seconds = Number.parseFloat(probed.trim());
+      if (Number.isFinite(seconds)) durationMs = Math.round(seconds * 1000);
+    } catch (probeError) {
+      console.warn("[deacon][worker] video duration probe failed", {
+        mediaId: media.id,
+        error: probeError instanceof Error ? probeError.message : String(probeError),
+      });
+    }
+
+    const audioStat = await stat(audioPath);
+    if (audioStat.size > TRANSCRIPTION_UPLOAD_LIMIT_BYTES) {
+      const error = new Error(
+        `Extracted audio is ${audioStat.size} bytes; the transcription provider limit is ${TRANSCRIPTION_UPLOAD_LIMIT_BYTES}`,
+      );
+      error.name = "VideoTooLongError";
+      throw error;
+    }
+
+    await updateProgress(media.id, { processing_stage: "transcribing", processing_progress: 45 });
+    console.info("[deacon][worker] transcribing audio", {
+      mediaId: media.id,
+      model: TRANSCRIPTION_MODEL,
+      audioBytes: audioStat.size,
+    });
+    const result = await transcribeAudio(audioPath, "audio.mp3");
+    const segments = normalizeWhisperSegments(result.segments);
+    const fullText = segments.map((segment) => segment.text).join(" ");
+
+    await updateProgress(media.id, { processing_stage: "saving", processing_progress: 80 });
+    const { error: transcriptError } = await supabase
+      .from("transcripts")
+      .upsert(
+        {
+          user_id: media.user_id,
+          media_item_id: media.id,
+          full_text: fullText,
+          language: result.language ?? null,
+          segments: segments.map((segment) => ({
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            text: segment.text,
+          })),
+        },
+        { onConflict: "media_item_id" },
+      );
+    if (transcriptError) {
+      throw new Error(`Transcript save failed (${transcriptError.code}): ${transcriptError.message}`);
+    }
+
+    await ensureTranscriptChunks(media, { full_text: fullText, segments });
+
+    await updateProgress(media.id, {
+      status: "ready",
+      processing_stage: "ready",
+      processing_progress: 100,
+      ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+      processing_error_code: null,
+      processing_error_service: null,
+      processing_error_message: null,
+      processing_error_request_id: null,
+      processing_completed_at: new Date().toISOString(),
+    });
+    console.info("[deacon][worker] video ready", {
+      mediaId: media.id,
+      durationMs,
+      segmentCount: segments.length,
+      textLength: fullText.length,
+    });
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function processOne(media) {
   try {
     await updateProgress(media.id, {
@@ -648,6 +930,12 @@ async function processOne(media) {
       return;
     }
 
+    if (media.kind === "video") {
+      await processVideo(media);
+      workerDegraded = false;
+      return;
+    }
+
     console.info("[deacon][worker] no processor for media kind yet", {
       mediaId: media.id,
       kind: media.kind,
@@ -662,9 +950,20 @@ async function processOne(media) {
     const providerDetails = providerDetailsFromError(error);
     const isEmbeddingFailure = error instanceof Error && error.name === "EmbeddingProviderError";
     const isVisionFailure = error instanceof Error && error.name === "VisionProviderError";
+    const isTranscriptionFailure = error instanceof Error && error.name === "TranscriptionProviderError";
     const processingErrorCode =
       error instanceof Error && error.name === "UnsupportedImageFormatError"
         ? "image_format_unsupported"
+        : error instanceof Error && error.name === "VideoTooLongError"
+          ? "video_too_long"
+          : isTranscriptionFailure && providerDetails?.kind === "quota_exhausted"
+            ? "transcription_quota_exhausted"
+            : isTranscriptionFailure && providerDetails?.kind === "permission_denied"
+              ? "transcription_permission_denied"
+              : isTranscriptionFailure && providerDetails?.kind === "authentication"
+                ? "transcription_configuration_error"
+                : isTranscriptionFailure
+                  ? "transcription_failed"
         : isEmbeddingFailure && providerDetails?.kind === "quota_exhausted"
           ? "embedding_quota_exhausted"
           : isEmbeddingFailure && providerDetails?.kind === "permission_denied"
@@ -681,9 +980,11 @@ async function processOne(media) {
         ? "openai_embeddings"
         : isVisionFailure
           ? "openai_vision"
-          : error instanceof Error && error.name === "UnsupportedImageFormatError"
-            ? "image_processor"
-            : "media_worker";
+          : isTranscriptionFailure
+            ? "openai_transcription"
+            : error instanceof Error && error.name === "UnsupportedImageFormatError"
+              ? "image_processor"
+              : "media_worker";
     const processingErrorMessage =
       processingErrorCode === "image_format_unsupported"
         ? "Este formato todavía no se puede convertir en el worker."
@@ -723,13 +1024,17 @@ async function processOne(media) {
 }
 
 async function poll() {
-  const { data: mediaItems, error } = await supabase
+  let query = supabase
     .from("media_items")
     .select("id, user_id, session_id, kind, mime_type, storage_key, original_filename, status, processing_attempts")
     .eq("status", "processing")
     .is("deleted_at", null)
     .order("created_at", { ascending: true })
     .limit(1);
+  // Instances without ffmpeg (the Vercel lane) leave videos queued for the
+  // Docker worker instead of blocking the rest of the queue behind them.
+  if (!ffmpegAvailable) query = query.neq("kind", "video");
+  const { data: mediaItems, error } = await query;
 
   if (error) {
     console.error("[deacon][worker] queue poll failed", {
@@ -870,7 +1175,7 @@ async function pollPendingEmbeddings() {
 
   const { data: transcripts, error } = await supabase
     .from("transcripts")
-    .select("media_item_id, full_text")
+    .select("media_item_id, full_text, segments")
     .limit(20);
 
   if (error) {
