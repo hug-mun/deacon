@@ -40,7 +40,19 @@ let lastHealthWriteAt = 0;
 let workerDegraded = false;
 
 if (!supabaseUrl || !serviceRoleKey) {
-  console.error("[deacon][worker] Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  console.error("[deacon][worker] Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY", {
+    hasSupabaseUrl: Boolean(supabaseUrl),
+    hasServiceRoleKey: Boolean(serviceRoleKey),
+  });
+  // Log the names (never values) of related variables this container received,
+  // so misspelled or unattached variables are visible in the deploy logs.
+  const relatedNames = Object.keys(process.env)
+    .filter((name) => /SUPABASE|SUPA|OPENAI|WORKER|RESEND/i.test(name))
+    .sort();
+  console.error(
+    "[deacon][worker] related env var names visible to this container:",
+    relatedNames.length > 0 ? relatedNames : "(none)",
+  );
   process.exit(1);
 }
 
