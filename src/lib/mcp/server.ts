@@ -133,22 +133,30 @@ async function searchKnowledge(
   if (titleError) throw new Error(`Image title lookup failed: ${titleError.message}`);
   const titleByMediaId = new Map((mediaTitles ?? []).map((media) => [media.id, media]));
 
-  return selectedRows.map((row) => ({
-    id: row.id,
-    sourceType: row.source_type,
-    sourceId: row.source_id,
-    sessionId: row.session_id,
-    mediaItemId: row.media_item_id,
-    filename: row.original_filename,
-    snippet: makeSnippet(row.content, query),
-    startMs: row.start_ms,
-    endMs: row.end_ms,
-    charStart: row.char_start,
-    charEnd: row.char_end,
-    titleEn: row.media_item_id ? titleByMediaId.get(row.media_item_id)?.image_title_en ?? null : null,
-    titleEs: row.media_item_id ? titleByMediaId.get(row.media_item_id)?.image_title_es ?? null : null,
-    score: row.similarity,
-  }));
+  return selectedRows.map((row) => {
+    const titleEn = row.media_item_id ? titleByMediaId.get(row.media_item_id)?.image_title_en ?? null : null;
+    const titleEs = row.media_item_id ? titleByMediaId.get(row.media_item_id)?.image_title_es ?? null : null;
+    // The human-friendly title is the citation label; the raw upload filename
+    // (e.g. "IMG_3537.png") is only a last resort when nothing better exists.
+    const displayName = titleEs ?? titleEn ?? row.original_filename ?? null;
+    return {
+      id: row.id,
+      sourceType: row.source_type,
+      sourceId: row.source_id,
+      sessionId: row.session_id,
+      mediaItemId: row.media_item_id,
+      displayName,
+      filename: row.original_filename,
+      snippet: makeSnippet(row.content, query),
+      startMs: row.start_ms,
+      endMs: row.end_ms,
+      charStart: row.char_start,
+      charEnd: row.char_end,
+      titleEn,
+      titleEs,
+      score: row.similarity,
+    };
+  });
 }
 
 function makeSnippet(content: string, query: string) {
@@ -169,7 +177,7 @@ export function createMcpServer(userId: string) {
     { name: "deacon-knowledge", version: "0.1.0" },
     {
       instructions:
-        "Deacon is a private dermatology exam-study knowledge base. Use search_knowledge before answering questions about the user's material. Search results may come from transcripts, notes, or image OCR/visual descriptions. Cite the returned filename, source type, and character/time locator. Use get_media_item when an image's metadata or temporary preview URL is useful. Use get_transcript with the returned charStart and a bounded maxChars window instead of reading an entire document. Treat retrieved material as study evidence, not as a clinical diagnosis. If there are no results, say that the material does not contain enough evidence.",
+        "Deacon is a private dermatology exam-study knowledge base. Use search_knowledge before answering questions about the user's material. Search results may come from transcripts, notes, or image OCR/visual descriptions. When citing a source, use the result's `displayName` (the human-friendly title, e.g. \"Inflamación crónica de bajo grado\") together with the source type and character/time locator. Do NOT cite the raw upload `filename` (e.g. \"IMG_3537.png\") unless `displayName` is empty. Use get_media_item when an image's metadata or temporary preview URL is useful. Use get_transcript with the returned charStart and a bounded maxChars window instead of reading an entire document. Treat retrieved material as study evidence, not as a clinical diagnosis. If there are no results, say that the material does not contain enough evidence.",
     },
   );
 
@@ -241,10 +249,11 @@ export function createMcpServer(userId: string) {
         .createSignedUrl(media.storage_key, 300);
       const safeMedia = { ...media };
       delete safeMedia.storage_key;
+      const displayName = media.image_title_es ?? media.image_title_en ?? media.original_filename ?? null;
       return resultJson({
         mediaId,
         found: true,
-        item: { ...safeMedia, previewUrl: signedUrl?.signedUrl ?? null },
+        item: { ...safeMedia, displayName, previewUrl: signedUrl?.signedUrl ?? null },
       });
     },
   );
@@ -273,17 +282,20 @@ export function createMcpServer(userId: string) {
 
       const { data: media } = await supabase
         .from("media_items")
-        .select("id, original_filename, status, session_id")
+        .select("id, original_filename, status, session_id, image_title_en, image_title_es")
         .eq("id", mediaId)
         .eq("user_id", userId)
         .is("deleted_at", null)
         .maybeSingle();
+      const mediaWithDisplayName = media
+        ? { ...media, displayName: media.image_title_es ?? media.image_title_en ?? media.original_filename ?? null }
+        : media;
       const fullText = transcript.full_text ?? "";
       const boundedStart = Math.min(startChar, fullText.length);
       const boundedEnd = Math.min(fullText.length, boundedStart + maxChars);
       return resultJson({
         found: Boolean(media),
-        media,
+        media: mediaWithDisplayName,
         language: transcript.language,
         transcript: media ? fullText.slice(boundedStart, boundedEnd) : null,
         startChar: boundedStart,
